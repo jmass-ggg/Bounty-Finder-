@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from bountyradar.discovery import reward_mention
 from bountyradar.models import BountyCandidate
+from bountyradar.rewards import RewardKind, assess_reward, reward_mention
 from bountyradar.settings import Settings
 from bountyradar.verification import EXPIRY_DATE
 from bountyradar.verification_models import Evidence, IssueInspection
@@ -169,6 +169,13 @@ class GitHubIssueInspector:
                     elif ambiguous:
                         result.missing_sources.append("unconfirmed contributor claim request")
                     mentioned, _, parsed = reward_mention(body)
+                    comment_reward = assess_reward(
+                        body, source="maintainer_comment" if trusted else "public_comment",
+                        source_url=comment.get("html_url") or candidate.url,
+                        author=(comment.get("user") or {}).get("login")
+                        if isinstance(comment.get("user"), dict) else None,
+                    )
+                    trusted_offer = False
                     if mentioned is None and parsed:
                         result.missing_sources.append(f"comment reward: {parsed}")
                     if mentioned is not None and mentioned > 0:
@@ -199,6 +206,16 @@ class GitHubIssueInspector:
                                 edited = datetime.fromisoformat(
                                     comment["updated_at"].replace("Z", "+00:00"),
                                 ) if comment.get("updated_at") else None
+                                if trusted and (edited is None or edited == announced):
+                                    trusted_offer = True
+                                    result.evidence.append(Evidence(
+                                        kind="maintainer_reward_offer",
+                                        source="github_comment",
+                                        url=comment.get("html_url") or candidate.url,
+                                        observed_at=announced, detail=body,
+                                    ))
+                                    for item in comment_reward.evidence:
+                                        item.source_timestamp = announced
                                 if trusted and edited == announced:
                                     result.evidence.append(Evidence(
                                         kind="trusted_reward_announcement",
@@ -208,6 +225,14 @@ class GitHubIssueInspector:
                                     ))
                         except (KeyError, ValueError, TypeError, AttributeError):
                             pass
+                    if not trusted_offer:
+                        for item in comment_reward.evidence:
+                            if item.classification == RewardKind.REWARD_OFFER:
+                                item.classification = RewardKind.AMBIGUOUS_MONETARY_REFERENCE
+                                item.explanation = (
+                                    "Comment lacks credible maintainer identity or unedited date"
+                                )
+                    result.reward_evidence.extend(comment_reward.evidence)
                     if TERMINAL.search(body):
                         result.terminal_reason = body[:300]
                         result.evidence.append(

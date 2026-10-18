@@ -404,7 +404,8 @@ async def test_comment_edit_or_deletion_does_not_reuse_old_price(respx_mock):
     respx_mock.get(base).respond(200, json=issue(
         8, title='Parser', body='Please repair', comments=1))
     comments = respx_mock.get(base+'/comments').respond(200, json=[{
-        'body':'Bounty $100', 'created_at':(NOW-timedelta(hours=1)).isoformat()}])
+        'body':'Bounty $100', 'author_association':'OWNER',
+        'created_at':(NOW-timedelta(hours=1)).isoformat()}])
     respx_mock.get(base+'/timeline').respond(200, json=[])
     s = options(notification_mode='include_unverified')
     async with httpx.AsyncClient() as client:
@@ -412,6 +413,7 @@ async def test_comment_edit_or_deletion_does_not_reuse_old_price(respx_mock):
         r = await Verifier(inspector, s, clock=lambda: NOW).verify(candidate())
         assert r.amount == 100 and eligible_for_delivery(r, s, NOW)
         comments.respond(200, json=[{'body':'Bounty $50',
+                                     'author_association':'OWNER',
                                      'created_at':(NOW-timedelta(hours=1)).isoformat()}])
         assert await github_revalidator(inspector, r, now=NOW) is None
         new = await Verifier(inspector, s, clock=lambda: NOW).verify(candidate())

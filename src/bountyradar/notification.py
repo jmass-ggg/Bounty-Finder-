@@ -212,6 +212,15 @@ def eligible_for_delivery(result: VerificationResult, settings: Settings, now) -
     if threshold is None or result.amount <= 0 or result.amount < threshold:
         return False
     if result.category != Category.FUNDED_EVIDENCE:
+        from bountyradar.rewards import RewardKind
+
+        if result.reward_evidence and not any(
+            e.classification == RewardKind.REWARD_OFFER
+            and e.amount == result.amount and e.currency == result.currency
+            and e.source in {"issue_title", "issue_body", "maintainer_comment"}
+            for e in result.reward_evidence
+        ):
+            return False
         return (
             settings.notification_mode == "include_unverified"
             and result.category in {Category.REWARD_CLAIMED, Category.UNCERTAIN}

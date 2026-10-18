@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from email.utils import format_datetime
 
-from bountyradar.discovery import reward_mention
 from bountyradar.notification import (
     DeliveryError,
     MailTransport,
@@ -15,6 +14,7 @@ from bountyradar.notification import (
     opportunity_message,
 )
 from bountyradar.outbox import NotificationOutbox
+from bountyradar.rewards import RewardKind, assess_issue_reward, reward_mention
 from bountyradar.settings import Settings
 from bountyradar.verification import CANCELLED, EXPIRY_DATE, RESTRICTION
 from bountyradar.verification_models import Category, VerificationResult
@@ -116,15 +116,20 @@ async def github_revalidator(
     inspection = await inspector.inspect(result.candidate)
     if inspection.missing_sources:
         return None
-    text = " ".join((inspection.title or "", inspection.body, *inspection.labels))
+    text = "\n\n".join((inspection.title or "", inspection.body, *inspection.labels))
     if CANCELLED.search(text) or RESTRICTION.search(text):
         return False
     if result.category != Category.FUNDED_EVIDENCE:
-        current_amount, currency, parsed = reward_mention(text)
-        if current_amount is None and parsed:
-            return None
+        assessment = assess_issue_reward(inspection.title or "", inspection.body,
+                                         result.candidate.url)
+        current_amount, currency = assessment.amount, assessment.currency
+        if assessment.classification == RewardKind.AMBIGUOUS_MONETARY_REFERENCE:
+            return None if any(e.classification == RewardKind.REWARD_OFFER
+                               for e in assessment.evidence) else False
         if current_amount is None:
-            announcements = [e for e in inspection.evidence if e.kind == "reward_announcement"]
+            announcements = [e for e in inspection.evidence if e.kind == "maintainer_reward_offer"]
+            if len({reward_mention(e.detail)[:2] for e in announcements}) > 1:
+                return None
             if announcements:
                 latest = max(announcements, key=lambda e: e.observed_at)
                 current_amount, currency, _ = reward_mention(latest.detail)

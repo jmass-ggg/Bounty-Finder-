@@ -7,6 +7,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, computed_field, field_validator
 
 from bountyradar.models import BountyCandidate
+from bountyradar.rewards import RewardEvidence
 
 
 class Category(StrEnum):
@@ -76,6 +77,7 @@ class IssueInspection(BaseModel):
     body: str = ""
     labels: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
+    reward_evidence: list[RewardEvidence] = Field(default_factory=list)
     linked_prs: list[str] = Field(default_factory=list)
     referenced_prs: list[str] = Field(default_factory=list)
     competing_work_found: bool = False
@@ -91,6 +93,7 @@ class VerificationResult(BaseModel):
     amount: Decimal | None = None
     currency: str | None = None
     evidence: list[Evidence] = Field(default_factory=list)
+    reward_evidence: list[RewardEvidence] = Field(default_factory=list)
     linked_prs: list[str] = Field(default_factory=list)
     referenced_prs: list[str] = Field(default_factory=list)
     assignees: list[str] = Field(default_factory=list)

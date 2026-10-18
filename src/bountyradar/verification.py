@@ -6,9 +6,9 @@ from datetime import UTC, date, datetime
 from typing import Protocol
 from urllib.parse import urlparse
 
-from bountyradar.discovery import reward_mention
 from bountyradar.models import BountyCandidate
 from bountyradar.ranking import rank
+from bountyradar.rewards import RewardKind, assess_issue_reward, reward_mention
 from bountyradar.settings import Settings
 from bountyradar.verification_models import (
     Availability,
@@ -142,15 +142,21 @@ class Verifier:
         # Keep search text only when the injected inspector supplied no title.
         issue_title = inspection.title if inspection.title is not None else candidate.title
         issue_body = inspection.body if inspection.title is not None else candidate.body or ""
-        text = " ".join((issue_title, issue_body, *inspection.labels))
+        text = "\n\n".join((issue_title, issue_body, *inspection.labels))
         provisional_amount, provisional_currency = (
             candidate.potential_reward_amount, candidate.currency,
         )
         if inspection.title is not None:
-            provisional_amount, provisional_currency, parsed = reward_mention(text)
-            if provisional_amount is None and parsed:
-                inspection.missing_sources.append(parsed)
+            assessment = assess_issue_reward(issue_title, issue_body, candidate.url)
+            provisional_amount, provisional_currency = assessment.amount, assessment.currency
+            inspection.reward_evidence = assessment.evidence + inspection.reward_evidence
+            if assessment.classification == RewardKind.AMBIGUOUS_MONETARY_REFERENCE:
+                inspection.missing_sources.append(assessment.explanation)
         announcements = [e for e in evidence if e.kind == "reward_announcement"]
+        offers = [e for e in evidence if e.kind == "maintainer_reward_offer"]
+        comment_amounts = {reward_mention(e.detail)[:2] for e in offers}
+        if len(comment_amounts) > 1:
+            inspection.missing_sources.append("maintainer comment rewards disagree")
         if provisional_amount is not None:
             for announcement in announcements:
                 amount, currency, _ = reward_mention(announcement.detail)
@@ -159,8 +165,8 @@ class Verifier:
                 ):
                     inspection.missing_sources.append("issue and comment rewards disagree")
                     break
-        if provisional_amount is None and announcements and not inspection.missing_sources:
-            latest = max(announcements, key=lambda e: e.observed_at)
+        if provisional_amount is None and offers and not inspection.missing_sources:
+            latest = max(offers, key=lambda e: e.observed_at)
             provisional_amount, provisional_currency, _ = reward_mention(latest.detail)
         if CLAIM.search(text):
             evidence.append(
@@ -257,6 +263,7 @@ class Verifier:
             amount=amount,
             currency=currency,
             evidence=evidence,
+            reward_evidence=inspection.reward_evidence,
             linked_prs=inspection.linked_prs,
             referenced_prs=inspection.referenced_prs,
             assignees=inspection.assignees,
