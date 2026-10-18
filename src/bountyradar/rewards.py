@@ -37,6 +37,10 @@ FUTURE_PAYMENT = re.compile(
     r"|(?:we|I)\s+(?:will\s+)?pay)\s*$", re.I,
 )
 PAYMENT_TITLE = re.compile(r"^\[Due for payment \d{4}-\d{2}-\d{2}\]\s*\[\s*$", re.I)
+TENTATIVE_REWARD = re.compile(
+    r"\b(?:proposed|requested)\s+(?:bounty|reward|prize|payment)"
+    r"\s*(?:(?:of|is|amount)\s*)?[:=\-]?\s*[\[(]?\s*$", re.I,
+)
 NON_OFFER = re.compile(
     r"\b(?:previous|previously|prior|historical|yesterday|already|settled|transferred|received|receipt"
     r"|used to|last (?:week|month|year)|no|not|never|cancelled|canceled|paid out)\b", re.I,
@@ -194,6 +198,9 @@ def assess_reward(
         elif negative:
             kind, reason = RewardKind.NO_REWARD, "Negative amount cannot qualify"
             amount = -amount if amount is not None else None
+        elif TENTATIVE_REWARD.search(before):
+            kind = RewardKind.AMBIGUOUS_MONETARY_REFERENCE
+            reason = "Proposed or requested payout is not an established reward offer"
         elif (NON_OFFER.search(before) or PRICE_SUFFIX.search(after)
               or PAST_PAYMENT.search(after) or HISTORICAL_SUFFIX.search(after)):
             kind = RewardKind.UNRELATED_TRANSACTION
