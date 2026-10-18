@@ -84,7 +84,7 @@ was attempted.
 - `rewards.py`: deterministic `REWARD_OFFER`, `UNRELATED_TRANSACTION`,
   `AMBIGUOUS_MONETARY_REFERENCE`, and `NO_REWARD` assessments. Evidence retains
   amount, currency, exact source span/offsets, source URL, author, reliable comment
-  timestamp, associated issue URL, and explanation. Explicit compensation attaches
+  UTC timestamp, associated issue URL, and explanation. Explicit compensation attaches
   to its own amount and task;
   prices, receipts, historical payments, quotes, code examples, and conflicting
   amounts cannot establish an actionable reward.
@@ -109,10 +109,10 @@ policy was changed. Advertised offers remain **UNVERIFIED** without a provider.
 
 - Before-fix reproduction against `651ef61`: expected failure, extracting
   `Decimal('11.00')` from the exact incident fixture.
-- Final focused monitoring regressions: **97 passed in 1.72 seconds**.
-- Final complete offline suite: **384 passed in 49.76 seconds**.
+- Final focused monitoring regressions: **97 passed in 1.74 seconds**.
+- Final complete offline suite: **384 passed in 48.21 seconds**.
 - The first deployment passed 170 focused tests; the final deployed-code focused
-  suite passed **182 tests in 28.16 seconds**.
+  suite passed **182 tests in 28.52 seconds**.
 - **24** explicit offer cases recognized through parsing, verification, and
   notification eligibility, including every requested example and tiny rewards.
 - **33** unrelated/historical financial cases rejected, plus mixed-price,
@@ -128,11 +128,13 @@ policy was changed. Advertised offers remain **UNVERIFIED** without a provider.
   manufacture `bounty`, `reward`, or `prize` from a longer word across long
   whitespace. The final parser preserves original token boundaries. A separate
   regression ensures target URLs are inspected in full, beyond excerpt limits.
+- Maintainer comment regressions include non-UTC source offsets and verify that
+  persisted structured reward timestamps are normalized to UTC.
 
 ## E. Production Deployment
 
 Reviewed application revision:
-`229846217cd5297576a8e225cd10a99ca6164418`.
+`e590e7c8c564428af80ed5296b74362b6bb56701`.
 
 The production checkout remains on main commit
 `651ef61c56a88178b3e1802ce1b1e523226cb485` with the reviewed source patch applied.
@@ -232,7 +234,8 @@ Production data, logs and backups are excluded from the feature commit.
 Branch: `fix/fresh-monetary-priority`.
 Initial parser commit: `ff7b5186c64e3dbcee42cc784a2b253fa822d426`.
 Issue-binding commit: `502255d293df9c963b4a88e910ebbd36a08a0dc0`.
-Final code commit: `229846217cd5297576a8e225cd10a99ca6164418`.
+Boundary-hardening commit: `229846217cd5297576a8e225cd10a99ca6164418`.
+Final code commit: `e590e7c8c564428af80ed5296b74362b6bb56701`.
 The branch is published to `jmass-ggg/Bounty-Finder-`; no force-push or main
 merge was performed. Review must reconcile the live source patch with the
 eventual reviewed merge while preserving `.env` and all runtime data.
