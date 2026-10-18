@@ -5,7 +5,7 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -15,6 +15,7 @@ import httpx
 from bountyradar.discovery import reward_mention
 from bountyradar.models import BountyCandidate
 from bountyradar.settings import Settings
+from bountyradar.verification import EXPIRY_DATE
 from bountyradar.verification_models import Evidence, IssueInspection
 
 API = "https://api.github.com"
@@ -86,7 +87,7 @@ class GitHubIssueInspector:
                 or not isinstance(issue.get("labels"), list)
                 or type(issue.get("comments")) is not int or issue["comments"] < 0
                 or "body" not in issue
-                or not isinstance(issue.get("body") or "", str)):
+                or (issue["body"] is not None and not isinstance(issue["body"], str))):
             result.missing_sources.append("issue detail: missing or invalid availability fields")
             return result
         now = self.clock()
@@ -145,7 +146,7 @@ class GitHubIssueInspector:
                     if not isinstance(comment, dict):
                         result.missing_sources.append("invalid issue comment object")
                         continue
-                    body = comment.get("body") or ""
+                    body = comment.get("body")
                     if not isinstance(body, str):
                         result.missing_sources.append("invalid issue comment body")
                         continue
@@ -171,6 +172,18 @@ class GitHubIssueInspector:
                     if mentioned is None and parsed:
                         result.missing_sources.append(f"comment reward: {parsed}")
                     if mentioned is not None and mentioned > 0:
+                        for match in EXPIRY_DATE.finditer(body):
+                            try:
+                                expired = date.fromisoformat(match.group(1)) < now.date()
+                            except ValueError:
+                                continue
+                            if expired:
+                                result.terminal_reason = "reward comment deadline has passed"
+                                result.evidence.append(Evidence(
+                                    kind="expired_deadline", source="github_comment",
+                                    url=comment.get("html_url") or candidate.url,
+                                    observed_at=now, detail=match.group(0),
+                                ))
                         # Only an actual parseable comment date is an announcement timestamp.
                         try:
                             announced = datetime.fromisoformat(
@@ -267,7 +280,8 @@ class GitHubIssueInspector:
                         raise ApiUnavailable("invalid pull request detail")
                     if (pr.get("state") not in {"open", "closed"}
                             or not isinstance(pr.get("title"), str)
-                            or not isinstance(pr.get("body") or "", str)):
+                            or "body" not in pr
+                            or (pr["body"] is not None and not isinstance(pr["body"], str))):
                         raise ApiUnavailable("invalid pull request availability fields")
                     result.checked_sources.append(f"pull request {pr_url}")
                     text = (pr.get("title") or "") + " " + (pr.get("body") or "")
