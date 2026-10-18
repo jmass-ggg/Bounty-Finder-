@@ -234,6 +234,10 @@ eventual reviewed merge while preserving `.env` and all runtime data.
 
 Review handoff: https://github.com/jmass-ggg/Bounty-Finder-/compare/main...fix/fresh-monetary-priority
 
+No pull request was created: the GitHub CLI is not authenticated in this
+environment. Git push authentication worked, and the complete branch and report
+are published for review through the comparison link.
+
 ## K. Final Readiness
 
 **GO for GitHub review; NO-GO for unattended production email at handoff.**
