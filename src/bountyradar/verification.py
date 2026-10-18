@@ -154,12 +154,14 @@ class Verifier:
                 inspection.missing_sources.append(assessment.explanation)
         announcements = [e for e in evidence if e.kind == "reward_announcement"]
         offers = [e for e in evidence if e.kind == "maintainer_reward_offer"]
-        comment_amounts = {reward_mention(e.detail)[:2] for e in offers}
+        comment_amounts = {
+            reward_mention(e.detail, source_url=candidate.url)[:2] for e in offers
+        }
         if len(comment_amounts) > 1:
             inspection.missing_sources.append("maintainer comment rewards disagree")
         if provisional_amount is not None:
             for announcement in announcements:
-                amount, currency, _ = reward_mention(announcement.detail)
+                amount, currency, _ = reward_mention(announcement.detail, source_url=candidate.url)
                 if amount is not None and (amount, currency) != (
                     provisional_amount, provisional_currency,
                 ):
@@ -167,7 +169,9 @@ class Verifier:
                     break
         if provisional_amount is None and offers and not inspection.missing_sources:
             latest = max(offers, key=lambda e: e.observed_at)
-            provisional_amount, provisional_currency, _ = reward_mention(latest.detail)
+            provisional_amount, provisional_currency, _ = reward_mention(
+                latest.detail, source_url=candidate.url,
+            )
         if CLAIM.search(text):
             evidence.append(
                 Evidence(

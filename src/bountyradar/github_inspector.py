@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import httpx
 
 from bountyradar.models import BountyCandidate
-from bountyradar.rewards import RewardKind, assess_reward, reward_mention
+from bountyradar.rewards import RewardKind, assess_reward
 from bountyradar.settings import Settings
 from bountyradar.verification import EXPIRY_DATE
 from bountyradar.verification_models import Evidence, IssueInspection
@@ -168,12 +168,17 @@ class GitHubIssueInspector:
                                 observed_at=self._when(comment, now), detail=body[:300]))
                     elif ambiguous:
                         result.missing_sources.append("unconfirmed contributor claim request")
-                    mentioned, _, parsed = reward_mention(body)
                     comment_reward = assess_reward(
                         body, source="maintainer_comment" if trusted else "public_comment",
                         source_url=comment.get("html_url") or candidate.url,
                         author=(comment.get("user") or {}).get("login")
                         if isinstance(comment.get("user"), dict) else None,
+                    )
+                    mentioned = comment_reward.amount
+                    parsed = (
+                        comment_reward.explanation
+                        if comment_reward.classification == RewardKind.AMBIGUOUS_MONETARY_REFERENCE
+                        else None
                     )
                     trusted_offer = False
                     if mentioned is None and parsed:

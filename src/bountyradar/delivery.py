@@ -128,18 +128,21 @@ async def github_revalidator(
                                for e in assessment.evidence) else False
         if current_amount is None:
             announcements = [e for e in inspection.evidence if e.kind == "maintainer_reward_offer"]
-            if len({reward_mention(e.detail)[:2] for e in announcements}) > 1:
+            if len({reward_mention(e.detail, source_url=result.candidate.url)[:2]
+                    for e in announcements}) > 1:
                 return None
             if announcements:
                 latest = max(announcements, key=lambda e: e.observed_at)
-                current_amount, currency, _ = reward_mention(latest.detail)
+                current_amount, currency, _ = reward_mention(
+                    latest.detail, source_url=result.candidate.url,
+                )
         if current_amount is None or current_amount <= 0:
             return False
         if current_amount != result.amount or currency != result.currency:
             return None  # Defer until the normal verifier updates the stored snapshot.
         for evidence in inspection.evidence:
             if evidence.kind == "reward_announcement":
-                amount, code, _ = reward_mention(evidence.detail)
+                amount, code, _ = reward_mention(evidence.detail, source_url=result.candidate.url)
                 if amount is not None and (amount, code) != (result.amount, result.currency):
                     return None
     for match in EXPIRY_DATE.finditer(text):

@@ -4,6 +4,7 @@ import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -58,6 +59,9 @@ COMMERCIAL_OBJECT = re.compile(
 )
 HISTORICAL_SUFFIX = re.compile(r"\b(?:yesterday|last (?:week|month|year)|previously)\b", re.I)
 BOUNDARY = re.compile(r"[.;!?](?:\s|$)|\n\s*\n")
+ISSUE_URL = r"https://github\.com/[^/\s)]+/[^/\s)]+/issues/\d+"
+LINKED_ISSUE = re.compile(rf"\[[^\n]*?\]\((?P<url>{ISSUE_URL})(?:[?#][^\s)]*)?\)")
+TARGET_SUFFIX = re.compile(rf"^\s*(?:for|on|at)\s+(?P<url>{ISSUE_URL})", re.I)
 
 
 class RewardKind(StrEnum):
@@ -76,6 +80,7 @@ class RewardEvidence(BaseModel):
     end: int = Field(ge=0)
     source: str
     source_url: str | None = None
+    issue_url: str | None = None
     source_timestamp: datetime | None = None
     author: str | None = None
     explanation: str
@@ -137,6 +142,11 @@ def assess_reward(
                     lambda m: re.sub(r"[^\n]", " ", m.group()), text, flags=re.S)
     masked = re.sub(r"(?m)^[ \t]*>[^\n]*",
                     lambda m: " " * len(m.group()), masked)
+    issue_url = None
+    if source_url:
+        parsed = urlsplit(source_url)
+        issue_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    links = list(LINKED_ISSUE.finditer(text))
     evidence = []
     for match in AMOUNT.finditer(text):
         prefix = masked[:match.start()]
@@ -146,6 +156,10 @@ def assess_reward(
         end = end_boundary.start() if end_boundary else len(text)
         start, end = max(start, match.start() - 180), min(end, match.end() + 160)
         before, after = masked[start:match.start()], masked[match.end():end]
+        linked = next((link for link in links
+                       if link.start() <= match.start() < link.end()), None)
+        target = linked or TARGET_SUFFIX.match(after)
+        target_url = target["url"] if target else issue_url
         span = text[start:end]
         number = match["symbol_amount"] or match["code_amount"] or match["suffix_amount"]
         currency = (match["code"] or match["suffix_code"] or
@@ -171,6 +185,9 @@ def assess_reward(
         negative = re.search(r"[-\u2212]\s*$", text[max(0, match.start() - 3):match.start()])
         if not masked[match.start():match.end()].strip():
             kind, reason = RewardKind.UNRELATED_TRANSACTION, "Quoted or code example, not an offer"
+        elif target and target_url != issue_url:
+            kind = RewardKind.UNRELATED_TRANSACTION
+            reason = "Reward refers to another GitHub issue; that task needs independent inspection"
         elif negative:
             kind, reason = RewardKind.NO_REWARD, "Negative amount cannot qualify"
             amount = -amount if amount is not None else None
@@ -196,6 +213,7 @@ def assess_reward(
         evidence.append(RewardEvidence(
             classification=kind, amount=amount, currency=currency, text_span=span,
             start=start, end=end, source=source, source_url=source_url,
+            issue_url=target_url,
             source_timestamp=source_timestamp, author=author, explanation=reason,
         ))
     return _summarize(evidence)
@@ -208,9 +226,11 @@ def assess_issue_reward(title: str, body: str, url: str | None = None) -> Reward
     )
 
 
-def reward_mention(text: str) -> tuple[Decimal | None, str | None, str | None]:
+def reward_mention(
+    text: str, *, source_url: str | None = None,
+) -> tuple[Decimal | None, str | None, str | None]:
     """Compatibility API for callers that need only the provisional amount."""
-    assessment = assess_reward(text)
+    assessment = assess_reward(text, source_url=source_url)
     if assessment.classification == RewardKind.AMBIGUOUS_MONETARY_REFERENCE:
         return None, None, assessment.explanation
     return assessment.amount, assessment.currency, (

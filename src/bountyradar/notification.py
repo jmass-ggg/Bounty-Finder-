@@ -218,6 +218,7 @@ def eligible_for_delivery(result: VerificationResult, settings: Settings, now) -
             e.classification == RewardKind.REWARD_OFFER
             and e.amount == result.amount and e.currency == result.currency
             and e.source in {"issue_title", "issue_body", "maintainer_comment"}
+            and e.issue_url in {None, result.candidate.url}
             for e in result.reward_evidence
         ):
             return False

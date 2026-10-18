@@ -182,6 +182,21 @@ def test_quotes_and_code_are_not_offers_but_do_not_hide_later_offers():
                 if e.classification == RewardKind.UNRELATED_TRANSACTION]) == 2
 
 
+@pytest.mark.parametrize("body,expected", [
+    ("[Bounty: $5](https://github.com/acme/tool/issues/8)", "5"),
+    ("[Bounty: $80](https://github.com/other/tool/issues/37)", None),
+    ("Reward $1 for this fix; [Bounty: $80](https://github.com/other/tool/issues/37)", "1"),
+    ("Reward $50 for https://github.com/other/tool/issues/37", None),
+    ("Reward $5 for this fix; related issue https://github.com/other/tool/issues/37", "5"),
+])
+def test_reward_is_bound_to_the_task_being_inspected(body, expected):
+    assessment = assess_reward(body, source="issue_body", source_url=candidate().url)
+    assert assessment.amount == (Decimal(expected) if expected else None)
+    for entry in assessment.evidence:
+        if entry.classification == RewardKind.REWARD_OFFER:
+            assert entry.issue_url == candidate().url
+
+
 @pytest.mark.parametrize("body", ["Bounty $100 or $50", "Reward USD 5 or EUR 5"])
 def test_alternative_reward_amounts_are_ambiguous(body):
     assert reward_mention(body)[0] is None
@@ -228,6 +243,8 @@ async def test_comment_reward_requires_credible_current_maintainer_offer(
     (["Vendor account funded $11 yesterday"], False),
     (["Reward $5; deadline: 2020-01-01"], False),
     (["Reward $5", "Reward $100"], None),
+    (["[Bounty: $80](https://github.com/other/tool/issues/37)"], False),
+    (["[Bounty: $5](https://github.com/acme/tool/issues/8)"], True),
 ])
 async def test_maintainer_history_expiry_and_conflict_are_not_actionable(
     respx_mock, bodies, expected,
@@ -246,7 +263,7 @@ async def test_maintainer_history_expiry_and_conflict_are_not_actionable(
     async with httpx.AsyncClient() as client:
         inspector = GitHubIssueInspector(client, config, clock=lambda: NOW, sleep=no_sleep)
         value = await Verifier(inspector, config, clock=lambda: NOW).verify(candidate())
-        assert not eligible_for_delivery(value, config, NOW)
+        assert eligible_for_delivery(value, config, NOW) is (expected is True)
         assert await github_revalidator(inspector, value, now=NOW) is expected
 
 
@@ -264,20 +281,28 @@ def test_reward_amount_does_not_inherit_unrelated_financial_references(text, exp
 
 
 @pytest.mark.asyncio
-async def test_exact_sent_vendor_settlement_never_reaches_smtp(tmp_path, respx_mock):
-    # Exact 4,000-character body saved with the production sent event.
-    # It ends mid-word because discovery limits stored bodies to 4,000 chars.
-    body = (Path(__file__).parent / "fixtures/frantic-board-521.md").read_text().rstrip("\n")
-    assert len(body) == 4000
-    title = ("Vendor posting status gives a funded poster no decision, reason, "
-             "or expected time in funded_pending_review")
-    url = "https://github.com/auscaster/frantic-board/issues/521"
+@pytest.mark.parametrize("fixture,title,url,issue_id,number,stale_amount", [
+    ("frantic-board-521.md",
+     "Vendor posting status gives a funded poster no decision, reason, "
+     "or expected time in funded_pending_review",
+     "https://github.com/auscaster/frantic-board/issues/521", 5906661784, 521, "11.00"),
+    ("bountyscout-1611.md", "Bounty Alert: 14 New Opportunityies found",
+     "https://github.com/dev-kp-eloper/BountyScout/issues/1611", 5906508355, 1611, "80"),
+])
+async def test_sent_false_positive_fixtures_never_reach_smtp(
+    tmp_path, respx_mock, fixture, title, url, issue_id, number, stale_amount,
+):
+    # The vendor fixture is the exact 4,000-character saved search body;
+    # the roundup fixture preserves its original reward-bearing excerpt.
+    body = (Path(__file__).parent / "fixtures" / fixture).read_text().rstrip("\n")
+    if fixture == "frantic-board-521.md":
+        assert len(body) == 4000
     config = options(notification_mode="include_unverified", email_enabled=True,
                      smtp_username="sender@example.com", smtp_password="offline",
                      email_to="inbox@example.com")
-    raw = issue(521, id=5906661784, title=title, body=body, html_url=url,
+    raw = issue(number, id=issue_id, title=title, body=body, html_url=url,
                 labels=[], comments=0)
-    base = "https://api.github.com/repos/auscaster/frantic-board/issues/521"
+    base = url.replace("https://github.com/", "https://api.github.com/repos/")
     respx_mock.get(base).respond(200, json=raw)
     respx_mock.get(base + "/timeline").respond(200, json=[])
     async with httpx.AsyncClient() as client:
@@ -285,7 +310,7 @@ async def test_exact_sent_vendor_settlement_never_reaches_smtp(tmp_path, respx_m
         assert discovered.potential_reward_amount is None
         inspector = GitHubIssueInspector(client, config, clock=lambda: NOW, sleep=no_sleep)
         old = discovered.model_copy(update={
-            "potential_reward_amount": Decimal("11.00"), "currency": "USD",
+            "potential_reward_amount": Decimal(stale_amount), "currency": "USD",
         })
         verified = await Verifier(inspector, config, clock=lambda: NOW).verify(old)
         assert verified.amount is None
@@ -293,7 +318,7 @@ async def test_exact_sent_vendor_settlement_never_reaches_smtp(tmp_path, respx_m
         # Reproduce a cached, previously eligible result independently of the
         # corrected verifier, then exercise the actual delivery orchestrator.
         cached = await Verifier(FakeInspector(IssueInspection(
-            state="open", title=title, body="Bounty $11.00",
+            state="open", title=title, body=f"Bounty ${stale_amount}",
             checked_sources=["issue detail", "issue comments", "issue timeline"],
         )), config, clock=lambda: NOW).verify(old)
         assert eligible_for_delivery(cached, config, NOW)
