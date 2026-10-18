@@ -1,0 +1,23 @@
+[Unit]
+Description=BountyRadar GitHub bounty scan and notification delivery
+Documentation=file:///home/james/bounty/bountyradar/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/james/bounty/bountyradar
+EnvironmentFile=/home/james/bounty/bountyradar/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/james/bounty/bountyradar/.venv/bin/python -m bountyradar run
+TimeoutStartSec=270s
+TimeoutStopSec=25s
+SuccessExitStatus=143
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/james/bounty/bountyradar/data
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bountyradar
