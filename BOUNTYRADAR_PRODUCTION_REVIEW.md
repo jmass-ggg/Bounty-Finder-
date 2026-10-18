@@ -343,10 +343,31 @@ remain intentional. Neither gitleaks nor trufflehog is installed; this was an ex
 configured-value/pattern check, not a claim of an unavailable scanner or perfect detection.
 The final staged diff and index receive the same checks before committing.
 
-Publication evidence is recorded below after the normal commit/push verification.
-The implementation commit contains the tested source and fixtures. A separate report
-commit can record its SHA without a self-referential commit hash. Publication is
-authorized by the user and is independent of service activation or email-mode approval.
+**Implementation commit:**
+[`169f394dbb49461e7540172c6456c72ef2723316`](https://github.com/jmass-ggg/Bounty-Finder-/commit/169f394dbb49461e7540172c6456c72ef2723316),
+`feat: improve offline catch-up, claim validation and bounty alerts`.
+Normal fast-forward push succeeded, advancing remote main from `8cb266b` to
+`169f394`; `git ls-remote origin refs/heads/main` independently returned the full
+implementation SHA. No force, rebase, reset or history rewrite was used.
+
+HTTPS initially had no interactive credential helper; the configured discovery token
+then returned HTTP 403 for write access. Existing SSH authentication succeeded as
+the repository owner. The successful command was
+`git push git@github.com:jmass-ggg/Bounty-Finder-.git main:main` (exit 0).
+Origin remains the required HTTPS URL. No credential was embedded in a URL, saved
+to a helper, printed or committed. Public read/fetch and SSH write use the same repo.
+
+The commit contains **23 intended files**: `.env.example`, README, the historical
+real-operation amendment, both new reports, ten application modules
+(`cli`, `delivery`, `discovery`, `github_inspector`, `models`, `notification`,
+`run_state`, `settings`, `verification`, `verification_models`) and eight test files
+(`test_all_prices`, `test_deployment`, `test_email`, `test_end_to_end`,
+`test_offline_recovery`, `test_production_review`, `test_run_state`, `test_verification`).
+All **50 indexed project files** were scanned, not only changed lines; zero configured
+secret/address or credential-pattern findings, no runtime artifacts. Final staged
+whitespace checks passed. The separate documentation follow-up records this verified
+implementation SHA without trying to put its own self-referential SHA into the report.
+Publication is independent of service activation or email-mode approval.
 
 ## 12. Final decision and remaining actions
 

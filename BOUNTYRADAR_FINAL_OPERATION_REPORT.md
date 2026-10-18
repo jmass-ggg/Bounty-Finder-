@@ -54,8 +54,13 @@ systemd unit verification and source syntax checks exit 0. See review for comman
 ## J. GitHub
 
 Correct project root and main branch track the existing Bounty-Finder- remote.
-See the production review's publication record and the final response for verified SHAs.
-No force push/history rewrite; credentials and runtime artifacts excluded.
+Implementation commit
+[`169f394dbb49461e7540172c6456c72ef2723316`](https://github.com/jmass-ggg/Bounty-Finder-/commit/169f394dbb49461e7540172c6456c72ef2723316)
+was pushed successfully using existing SSH authentication; remote main was independently
+verified at that SHA. Origin remains the required HTTPS URL. No force push/history
+rewrite; all 50 indexed files passed configured-secret/pattern checks. No credentials,
+production databases or runtime artifacts were committed. A documentation follow-up
+records the publication evidence; see the production review for details.
 
 ## K. Remaining work
 
