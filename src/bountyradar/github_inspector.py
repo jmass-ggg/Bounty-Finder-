@@ -220,7 +220,7 @@ class GitHubIssueInspector:
                                         observed_at=announced, detail=body,
                                     ))
                                     for item in comment_reward.evidence:
-                                        item.source_timestamp = announced
+                                        item.source_timestamp = announced.astimezone(UTC)
                                 if trusted and edited == announced:
                                     result.evidence.append(Evidence(
                                         kind="trusted_reward_announcement",

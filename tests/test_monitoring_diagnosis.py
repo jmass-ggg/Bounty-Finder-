@@ -1,6 +1,6 @@
 """Production regressions: monetary priority, commercial noise and search churn."""
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
@@ -232,7 +232,7 @@ async def test_comment_reward_requires_credible_current_maintainer_offer(
     respx_mock.get(base + "/comments").respond(200, json=[{
         "body": "You will receive $50 after completing this issue",
         "author_association": association, "user": {"login": "maintainer"},
-        "created_at": NOW.isoformat(),
+        "created_at": NOW.astimezone(timezone(timedelta(hours=5))).isoformat(),
         "updated_at": (NOW + timedelta(seconds=int(edited))).isoformat(),
         "html_url": candidate().url + "#issuecomment-1",
     }])
@@ -247,6 +247,7 @@ async def test_comment_reward_requires_credible_current_maintainer_offer(
             entry = next(e for e in value.reward_evidence if e.source == "maintainer_comment")
             assert entry.amount == Decimal("50")
             assert entry.source_timestamp == NOW
+            assert entry.source_timestamp.utcoffset() == timedelta(0)
             assert entry.author == "maintainer"
             assert entry.text_span == "You will receive $50 after completing this issue"
             assert "compensation" in entry.explanation
