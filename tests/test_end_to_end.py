@@ -91,6 +91,7 @@ async def test_funded_issue_lifecycle_five_minute_rescan_increase_and_restart(tm
             200,
             json={
                 "state": "open" if issue_open[0] else "closed",
+                "title": "Bounty: repair parser",
                 "body": "Reward $100",
                 "labels": [{"name": "bounty"}],
                 "assignees": [],
@@ -279,7 +280,8 @@ async def test_older_claim_gains_external_funding_without_github_update(tmp_path
     respx_mock.get(API_ISSUE).mock(
         return_value=httpx.Response(
             200,
-            json={"state": "open", "body": "Reward $100", "assignees": [], "comments": 0},
+            json={"state": "open", "title": "Bounty: repair parser", "body": "Reward $100",
+                  "labels": [], "assignees": [], "comments": 0},
         )
     )
     respx_mock.get(f"{API_ISSUE}/timeline").mock(return_value=httpx.Response(200, json=[]))

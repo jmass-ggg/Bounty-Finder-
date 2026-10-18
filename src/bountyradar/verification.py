@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from typing import Protocol
 from urllib.parse import urlparse
 
+from bountyradar.discovery import reward_mention
 from bountyradar.models import BountyCandidate
 from bountyradar.ranking import rank
 from bountyradar.settings import Settings
@@ -68,27 +69,11 @@ class Verifier:
                 detail="Search candidate; reward unverified",
             )
         ]
-        threshold = (
-            self.settings.min_reward_usd
-            if candidate.currency == "USD"
-            else self.settings.currency_minimums.get(candidate.currency or "")
-        )
-        if (
-            candidate.potential_reward_amount is not None
-            and threshold is not None
-            and candidate.potential_reward_amount < threshold
-            and self.funding_provider is None
-        ):
-            inspection = IssueInspection(
-                state=candidate.state, missing_sources=["detail skipped below threshold"]
-            )
-        else:
-            inspection = await self.inspector.inspect(candidate)
+        # Search amounts may be stale or superseded by a reward announced in comments.
+        inspection = await self.inspector.inspect(candidate)
         evidence.extend(inspection.evidence)
         records: Sequence[FundingRecord] = []
-        if self.funding_provider and not inspection.missing_sources == [
-            "detail skipped below threshold"
-        ]:
+        if self.funding_provider:
             try:
                 records = await self.funding_provider.records_for(candidate)
                 inspection.checked_sources.append("funding provider")
@@ -120,6 +105,12 @@ class Verifier:
             <= (now - record.observed_at).total_seconds()
             <= self.settings.funding_evidence_max_age_hours * 3600
         ]
+        for record in current:
+            if record.status in {"claimed", "reserved", "in_progress"}:
+                inspection.competing_work_found = True
+                evidence.append(Evidence(kind="provider_claim", source=record.provider,
+                                         url=record.evidence_url, observed_at=record.observed_at,
+                                         detail=f"Provider reports {record.status}"))
         # Separate awards are never summed without a provider's explicit aggregate.
         funded = max(
             (record for record in current if record.status == "funded"),
@@ -150,6 +141,17 @@ class Verifier:
         issue_title = inspection.title if inspection.title is not None else candidate.title
         issue_body = inspection.body if inspection.title is not None else candidate.body or ""
         text = " ".join((issue_title, issue_body, *inspection.labels))
+        provisional_amount, provisional_currency = (
+            candidate.potential_reward_amount, candidate.currency,
+        )
+        if inspection.title is not None:
+            provisional_amount, provisional_currency, parsed = reward_mention(text)
+            if provisional_amount is None and parsed:
+                inspection.missing_sources.append(parsed)
+        announcements = [e for e in evidence if e.kind == "reward_announcement"]
+        if provisional_amount is None and announcements and not inspection.missing_sources:
+            latest = max(announcements, key=lambda e: e.observed_at)
+            provisional_amount, provisional_currency, _ = reward_mention(latest.detail)
         if CLAIM.search(text):
             evidence.append(
                 Evidence(
@@ -199,9 +201,9 @@ class Verifier:
             category = Category.UNAVAILABLE
         elif funded:
             category = Category.FUNDED_EVIDENCE
-        elif CLAIM.search(text):
+        elif CLAIM.search(text) or announcements:
             category = Category.REWARD_CLAIMED
-        elif candidate.potential_reward_amount is not None:
+        elif provisional_amount is not None:
             category = Category.UNCERTAIN
         else:
             category = Category.NOT_BOUNTY if not inspection.missing_sources else Category.UNCERTAIN
@@ -221,8 +223,8 @@ class Verifier:
             availability = Availability.UNKNOWN
         else:
             availability = Availability.AVAILABLE
-        amount = funded.amount if funded else candidate.potential_reward_amount
-        currency = funded.currency if funded else candidate.currency
+        amount = funded.amount if funded else provisional_amount
+        currency = funded.currency if funded else provisional_currency
         restrictions = list(dict.fromkeys(inspection.restrictions + RESTRICTION.findall(text)))
         for restriction in RESTRICTION.findall(text):
             evidence.append(
@@ -264,16 +266,20 @@ class Verifier:
         host = urlparse(record.evidence_url).hostname
         return (
             record.issue_url == candidate.url
-            and record.status in ("funded", "paid", "cancelled", "expired")
+            and record.status in ("funded", "paid", "cancelled", "expired",
+                                  "claimed", "reserved", "in_progress")
             and urlparse(record.evidence_url).scheme == "https"
             and bool(host)
             and host in self.settings.trusted_funding_hosts
             and record.provider in self.settings.trusted_funding_providers
         )
 
-    async def verify_many(self, candidates: Sequence[BountyCandidate]) -> list[VerificationResult]:
+    async def verify_many(
+        self, candidates: Sequence[BountyCandidate], *, preserve_order: bool = False,
+    ) -> list[VerificationResult]:
         """Inspect a bounded number of promising candidates; retain all for review."""
-        ordered = sorted(candidates, key=lambda item: item.updated_at, reverse=True)
+        ordered = (list(candidates) if preserve_order else
+                   sorted(candidates, key=lambda item: item.updated_at, reverse=True))
         results = []
         for index, candidate in enumerate(ordered):
             if index >= self.settings.max_verifications_per_scan:

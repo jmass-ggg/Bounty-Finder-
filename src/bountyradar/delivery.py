@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
+from bountyradar.discovery import reward_mention
 from bountyradar.notification import (
     DeliveryError,
     MailTransport,
@@ -14,7 +15,7 @@ from bountyradar.notification import (
 from bountyradar.outbox import NotificationOutbox
 from bountyradar.settings import Settings
 from bountyradar.verification import CANCELLED, EXPIRY_DATE, RESTRICTION
-from bountyradar.verification_models import VerificationResult
+from bountyradar.verification_models import Category, VerificationResult
 
 
 @dataclass
@@ -103,6 +104,19 @@ async def github_revalidator(
     text = " ".join((inspection.title or "", inspection.body, *inspection.labels))
     if CANCELLED.search(text) or RESTRICTION.search(text):
         return False
+    if result.category != Category.FUNDED_EVIDENCE:
+        current_amount, currency, parsed = reward_mention(text)
+        if current_amount is None and parsed:
+            return None
+        if current_amount is None:
+            announcements = [e for e in inspection.evidence if e.kind == "reward_announcement"]
+            if announcements:
+                latest = max(announcements, key=lambda e: e.observed_at)
+                current_amount, currency, _ = reward_mention(latest.detail)
+        if current_amount is None or current_amount <= 0:
+            return False
+        if current_amount != result.amount or currency != result.currency:
+            return None  # Defer until the normal verifier updates the stored snapshot.
     for match in EXPIRY_DATE.finditer(text):
         try:
             if date.fromisoformat(match.group(1)) < (now or datetime.now(UTC)).date():

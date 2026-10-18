@@ -24,6 +24,7 @@ from bountyradar.models import (
     SearchWindow,
     UnprocessedWindow,
 )
+from bountyradar.run_state import SearchLane
 from bountyradar.settings import Settings
 
 if TYPE_CHECKING:
@@ -41,6 +42,39 @@ AMOUNT = re.compile(
     re.I,
 )
 REWARD_CONTEXT = re.compile(r"\b(?:bounty|reward|paid|payment|payout|funded|prize)\b", re.I)
+
+
+def reward_mention(text: str) -> tuple[Decimal | None, str | None, str | None]:
+    """Extract a provisional amount/currency without a conversion or funding claim."""
+    found: dict[tuple[Decimal, str], str] = {}
+    for match in AMOUNT.finditer(text):
+        around = text[max(0, match.start() - 60):match.end() + 30]
+        if not REWARD_CONTEXT.search(around):
+            continue
+        if re.search(r"[-−][$€£₹]$", text[max(0, match.start() - 2):match.start()]):
+            continue
+        if re.search(r"\b(?:costs?|price|fee|subscription|budget)\b",
+                     text[max(0, match.start() - 30):match.end() + 20], re.I):
+            continue
+        number = match['symbol_amount'] or match['code_amount'] or match['suffix_amount']
+        if (not re.fullmatch(r"(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?", number)
+                or re.match(r"[.,]\d", text[match.end():])):
+            return None, None, "ambiguous or malformed reward amount"
+        currency = (match['code'] or match['suffix_code'] or
+                    {'$': 'USD', '€': 'EUR', '£': 'GBP', '₹': 'INR'}[match['symbol']])
+        if match['symbol']:
+            explicit = re.match(r"\s+([A-Z]{3,5})\b", text[match.end():])
+            if explicit:
+                code = explicit.group(1)
+                if code not in {"USD", "EUR", "GBP", "INR", "NPR", "JPY", "CAD", "AUD",
+                                "CHF", "CNY", "BTC", "ETH", "USDC", "USDT"}:
+                    return None, None, "unsupported reward currency"
+                currency = code
+        found[(Decimal(number.replace(',', '')), currency.upper())] = match.group(0)
+    if len(found) != 1:
+        return None, None, "ambiguous reward amounts or currencies" if found else None
+    (amount, currency), mention = next(iter(found.items()))
+    return amount, currency, mention
 
 
 class DiscoveryError(Exception):
@@ -84,6 +118,54 @@ class GitHubDiscovery:
         self.progress = progress
 
     async def scan(self, hours: float | None = None) -> ScanResult:
+        """Reserve a bounded recent lane while historical windows remain unfinished."""
+        saved = self.progress.search_progress() if self.progress else None
+        fresh_saved = self.progress.search_progress("github_fresh") if self.progress else None
+        if (not self.progress or self.settings.github_max_search_requests_per_scan < 2
+                or not (fresh_saved or (saved and saved.covered_until < self.clock()))):
+            return await self._scan(hours)
+        original = self.settings
+        start = self.monotonic()
+        cap = min(original.github_fresh_search_requests,
+                  max(1, original.github_max_search_requests_per_scan // 4))
+        terms = (["bounty"] if "bounty" in original.search_terms else original.search_terms[:1])
+        labels = original.search_labels[:1]
+        recent_settings = original.model_copy(update={
+            "search_terms": terms, "search_labels": labels,
+            "monetary_terms": [] if terms or labels else original.monetary_terms[:1],
+            "github_max_search_requests_per_scan": cap,
+            "github_search_timeout_seconds": min(original.github_fresh_search_timeout_seconds,
+                                                  original.github_search_timeout_seconds / 4),
+        })
+        lane = SearchLane(self.progress, "github_fresh")
+        recent = GitHubDiscovery(self.client, recent_settings, sleep=self.sleep, clock=self.clock,
+                                 monotonic=self.monotonic, jitter=self.jitter, progress=lane)
+        recent.next_request_at = self.next_request_at
+        recent.rate_limit_reset = self.rate_limit_reset
+        fresh = await recent._scan(original.fresh_lookback_hours)
+        if fresh.complete:
+            lane.save([], [], completed_at=fresh.covered_until)
+        self.requests += fresh.requests
+        self.next_request_at = recent.next_request_at
+        self.rate_limit_reset = recent.rate_limit_reset
+        self.settings = original.model_copy(update={
+            "github_max_search_requests_per_scan": (
+                original.github_max_search_requests_per_scan - fresh.requests),
+            "github_search_timeout_seconds": max(
+                0.001, original.github_search_timeout_seconds - (self.monotonic() - start)),
+        })
+        try:
+            historical = await self._scan(hours)
+        finally:
+            self.settings = original
+        merged = {c.source_issue_id: c for c in historical.candidates}
+        self._merge({c.source_issue_id: c for c in fresh.candidates}, merged)
+        historical.candidates = sorted(merged.values(), key=lambda c: c.updated_at, reverse=True)
+        historical.requests += fresh.requests
+        historical.fresh_unprocessed_windows = fresh.unprocessed_windows
+        return historical
+
+    async def _scan(self, hours: float | None = None) -> ScanResult:
         """Search created, updated, and older recently updated funding candidates."""
         lookback = hours if hours is not None else self.settings.created_lookback_hours
         if not math.isfinite(lookback) or lookback <= 0:
@@ -394,38 +476,12 @@ class GitHubDiscovery:
         if (item.get("repository") or {}).get("private") is True:
             return None
         text = " ".join((title, body))
-        match = next(
-            (
-                match
-                for match in AMOUNT.finditer(text)
-                if REWARD_CONTEXT.search(text[max(0, match.start() - 60) : match.end() + 30])
-                and not re.search(r"[-−][$€£₹]$", text[max(0, match.start() - 2):match.start()])
-                and not re.search(
-                    r"\b(?:costs?|price|fee|subscription|budget)\b",
-                    text[max(0, match.start() - 30) : match.end() + 20],
-                    re.I,
-                )
-            ),
-            None,
-        )
-        amount = Decimal((match['symbol_amount'] or match['code_amount'] or
-                          match['suffix_amount']).replace(",", "")) if match else None
-        currency = None
-        if match:
-            currency = (match['code'] or match['suffix_code'] or
-                        {'$': 'USD', '€': 'EUR', '£': 'GBP', '₹': 'INR'}[match['symbol']])
-            if match['symbol']:
-                explicit = re.match(
-                    r"\s+(USD|EUR|GBP|INR|NPR|JPY|CAD|AUD|CHF|CNY|BTC|ETH|USDC|USDT)\b",
-                    text[match.end():], re.I,
-                )
-                if explicit:
-                    currency = explicit.group(1)
+        amount, currency, mention = reward_mention(text)
         evidence = [url]
         if not REWARD_CONTEXT.search(" ".join((title, body, *labels))):
             evidence.append("search match may be in comments; reward unverified")
-        if match:
-            evidence.append(f"provisional amount mention: {match.group(0)}")
+        if mention:
+            evidence.append(f"provisional amount mention: {mention}")
         return BountyCandidate(
             source_issue_id=item["id"],
             repository=repository,

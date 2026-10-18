@@ -452,6 +452,7 @@ async def test_run_dry_run_uses_mocked_github_without_database(tmp_path, respx_m
             json={
                 "state": "open",
                 "body": "Reward $100",
+                "title": "Bounty: fix parser",
                 "labels": [],
                 "assignees": [],
                 "comments": 0,
@@ -507,6 +508,7 @@ async def test_run_queues_and_delivers_once_with_trusted_funding(tmp_path, respx
             json={
                 "state": "open",
                 "body": "Reward $100",
+                "title": "Bounty: fix parser",
                 "labels": [],
                 "assignees": [],
                 "comments": 0,

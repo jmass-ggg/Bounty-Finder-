@@ -4,7 +4,7 @@ import fcntl
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from bountyradar.models import BountyCandidate, SearchProgress
@@ -53,6 +53,9 @@ class RunState:
                 payload_json TEXT NOT NULL,
                 checked_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS issues_updated ON discovered_issues(
+                json_extract(payload_json, '$.updated_at') DESC);
+            CREATE INDEX IF NOT EXISTS verification_checked ON verification_results(checked_at);
         """)
 
     def close(self) -> None:
@@ -67,7 +70,13 @@ class RunState:
             row = self.db.execute(
                 "SELECT value FROM scan_state WHERE key='last_complete_at'"
             ).fetchone()
-        return datetime.fromisoformat(row[0]).astimezone(UTC) if row else None
+        if not row:
+            return None
+        try:
+            value = datetime.fromisoformat(row[0])
+            return value.astimezone(UTC) if value.tzinfo else None
+        except (ValueError, TypeError):
+            return None
 
     def tracked_eligible_candidates(self, limit: int) -> list[BountyCandidate]:
         """Recheck a bounded set of previously eligible issues even if search omits them."""
@@ -94,22 +103,59 @@ class RunState:
         ).fetchall()
         return [VerificationResult.model_validate_json(row[0]).candidate for row in rows]
 
-    def verification_queue(self, limit: int) -> list[BountyCandidate]:
-        """Serve never-inspected candidates first, then rotate by last inspection."""
-        rows = self.db.execute(
-            """SELECT d.payload_json FROM discovered_issues d
-            LEFT JOIN verification_results v USING (source_issue_id)
-            ORDER BY CASE WHEN v.source_issue_id IS NULL OR
-                json_extract(v.payload_json, '$.missing_sources[0]') =
-                'verification deferred by scan limit' THEN 0 ELSE 1 END,
-                v.checked_at, d.seen_at, d.source_issue_id LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        return [BountyCandidate.model_validate_json(row[0]) for row in rows]
+    def verification_queue(
+        self, limit: int, *, now: datetime | None = None, refresh_minutes: float = 60,
+    ) -> list[BountyCandidate]:
+        """Reserve 25% for oldest work; prioritize recent monetary changes otherwise.
 
-    def search_progress(self) -> SearchProgress | None:
+        Recently discovered catch-up candidates qualify even with old issue dates.
+        Unchanged complete results are revisited hourly, incomplete results after 5m.
+        A one-slot budget serves historical work every fourth run, across restarts.
+        """
+        if limit <= 0:
+            return []
+        now = now or datetime.now(UTC)
+        cutoff = (now - timedelta(hours=8)).isoformat()
+        retry = (now - timedelta(minutes=5)).isoformat()
+        refresh = (now - timedelta(minutes=refresh_minutes)).isoformat()
+        arrived = (now - timedelta(minutes=10)).isoformat()
+        due = """(v.source_issue_id IS NULL OR
+            julianday(json_extract(d.payload_json, '$.updated_at')) > julianday(v.checked_at)
+            OR julianday(v.checked_at) <= julianday(?) OR
+            (json_extract(v.payload_json, '$.availability')='UNKNOWN'
+                AND julianday(v.checked_at) <= julianday(?)))"""
+        base = """SELECT d.source_issue_id,d.payload_json FROM discovered_issues d
+                  LEFT JOIN verification_results v USING (source_issue_id) WHERE """ + due
+        row = self.db.execute("SELECT value FROM scan_state WHERE key='queue_round'").fetchone()
+        round_number = int(row[0]) if row else 0
+        reserve = max(1, limit // 4) if limit > 1 else int(round_number % 4 == 3)
+        recent = self.db.execute(
+            base + """ AND (julianday(d.seen_at) >= julianday(?) OR
+                julianday(json_extract(d.payload_json, '$.updated_at')) >= julianday(?))
+                ORDER BY CASE WHEN v.source_issue_id IS NULL AND
+                    julianday(d.seen_at) >= julianday(?) THEN 0 ELSE 1 END,
+                json_extract(d.payload_json, '$.updated_at') DESC,
+                CASE WHEN CAST(json_extract(d.payload_json,
+                    '$.potential_reward_amount') AS REAL)>0 THEN 0 ELSE 1 END,
+                v.checked_at, d.source_issue_id LIMIT ?""",
+            (refresh, retry, cutoff, cutoff, arrived, limit - reserve),
+        ).fetchall()
+        ids = [row[0] for row in recent]
+        placeholders = ','.join('?' for _ in ids) or "''"
+        older = self.db.execute(
+            base + f" AND d.source_issue_id NOT IN ({placeholders})" + """
+                ORDER BY v.checked_at, d.seen_at, d.source_issue_id LIMIT ?""",
+            (refresh, retry, *ids, limit - len(recent)),
+        ).fetchall()
+        with self.db:
+            self.db.execute("""INSERT INTO scan_state(key,value) VALUES ('queue_round',?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (str(round_number+1),))
+        self.queue_recent_count = len(recent)
+        return [BountyCandidate.model_validate_json(row[1]) for row in recent + older]
+
+    def search_progress(self, source: str = "github") -> SearchProgress | None:
         row = self.db.execute(
-            "SELECT value FROM scan_state WHERE key='github_search_progress'"
+            "SELECT value FROM scan_state WHERE key=?", (f"{source}_search_progress",)
         ).fetchone()
         return SearchProgress.model_validate_json(row[0]) if row else None
 
@@ -142,7 +188,9 @@ class RunState:
             self.db.executemany(
                 """INSERT INTO discovered_issues(source_issue_id,payload_json,seen_at)
                 VALUES (?,?,?) ON CONFLICT(source_issue_id) DO UPDATE SET
-                payload_json=excluded.payload_json,seen_at=excluded.seen_at""",
+                payload_json=excluded.payload_json
+                WHERE julianday(json_extract(excluded.payload_json, '$.updated_at')) >=
+                      julianday(json_extract(discovered_issues.payload_json, '$.updated_at'))""",
                 [
                     (
                         f"{item.source}:{item.source_issue_id}",
@@ -167,9 +215,9 @@ class RunState:
             )
             if progress is not None:
                 self.db.execute(
-                    """INSERT INTO scan_state(key,value) VALUES ('github_search_progress',?)
+                    """INSERT INTO scan_state(key,value) VALUES (?,?)
                     ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-                    (progress.model_dump_json(),),
+                    (f"{source}_search_progress", progress.model_dump_json()),
                 )
             if completed_at is not None:
                 self.db.execute(
@@ -177,12 +225,32 @@ class RunState:
                     ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
                     (f"last_complete_at:{source}", completed_at.astimezone(UTC).isoformat()),
                 )
+                self.db.execute(
+                    "DELETE FROM scan_state WHERE key=?", (f"{source}_search_progress",)
+                )
                 if source == "github":
-                    self.db.execute(
-                        "DELETE FROM scan_state WHERE key='github_search_progress'"
-                    )
                     self.db.execute(
                         """INSERT INTO scan_state(key,value) VALUES ('last_complete_at',?)
                         ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
                         (completed_at.astimezone(UTC).isoformat(),),
                     )
+
+
+class SearchLane:
+    """Isolated durable cursor; issue records and API cooldown remain shared."""
+
+    def __init__(self, state: RunState, source: str):
+        self.state, self.source = state, source
+
+    def search_progress(self):
+        return self.state.search_progress(self.source)
+
+    def save(self, candidates, results, *, completed_at, progress=None):
+        self.state.save(candidates, results, completed_at=completed_at,
+                        progress=progress, source=self.source)
+
+    def github_cooldown(self):
+        return self.state.github_cooldown()
+
+    def defer_github(self, until):
+        self.state.defer_github(until)

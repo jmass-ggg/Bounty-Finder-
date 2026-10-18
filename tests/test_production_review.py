@@ -125,7 +125,8 @@ async def test_inspector_does_not_repeat_requests_during_long_rate_limit(respx_m
 async def test_all_github_closing_forms_block_competing_pr(text, respx_mock):
     base = "https://api.github.com/repos/acme/tool"
     respx_mock.get(f"{base}/issues/8").respond(
-        200, json={"state": "open", "title": "Bounty", "comments": 0}
+        200, json={"state": "open", "title": "Bounty", "comments": 0,
+                   "labels": [], "assignees": []}
     )
     respx_mock.get(f"{base}/issues/8/timeline").respond(
         200,

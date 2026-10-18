@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from bountyradar.discovery import reward_mention
 from bountyradar.models import BountyCandidate
 from bountyradar.settings import Settings
 from bountyradar.verification_models import Evidence, IssueInspection
@@ -23,6 +24,20 @@ TERMINAL = re.compile(
 )
 CLAIM = re.compile(
     r"\b(?:claiming this|i(?:'| a)m working on this|i will take this|working on this issue)\b", re.I
+)
+CLAIM_LABEL = re.compile(
+    r"(?:(?:status|bounty|work)\s*[:/]\s*)?"
+    r"(?:claimed|reserved|assigned|in[ -]progress|work in progress|wip)", re.I,
+)
+CLAIM_REQUEST = re.compile(
+    r"\b(?:(?:can|may|could) i (?:work|take|claim)|i(?: would|'d) like to (?:work|take|claim))",
+    re.I,
+)
+CONFIRMED_CLAIM = re.compile(
+    r"\b(?:assigned|reserved|claimed)\s+(?:to|for|by)\s+@?[\w-]+"
+    r"|@[\w-]+\s+(?:is\s+)?(?:working on|assigned|has claimed)"
+    r"|\b(?:bounty|reward|issue)\s+(?:is\s+)?(?:claimed|reserved|assigned)\b"
+    r"|\b(?:go ahead|please proceed)\b", re.I,
 )
 RESTRICTION = re.compile(
     r"(?im)^.*\b(?:eligib(?:le|ility)|contributors? must|residents? only)\b.*$"
@@ -65,6 +80,14 @@ class GitHubIssueInspector:
         except ApiUnavailable as exc:
             result.missing_sources.append(f"issue detail: {exc}")
             return result
+        if (issue.get("state") not in {"open", "closed"}
+                or not isinstance(issue.get("title"), str)
+                or not isinstance(issue.get("assignees"), list)
+                or not isinstance(issue.get("labels"), list)
+                or type(issue.get("comments")) is not int or issue["comments"] < 0
+                or not isinstance(issue.get("body") or "", str)):
+            result.missing_sources.append("issue detail: missing or invalid availability fields")
+            return result
         now = self.clock()
         result.state = issue.get("state")
         result.title = issue.get("title") if isinstance(issue.get("title"), str) else None
@@ -73,6 +96,9 @@ class GitHubIssueInspector:
             for user in (issue.get("assignees") or [])
             if isinstance(user, dict) and "login" in user
         ]
+        if any(not isinstance(user, dict) or not isinstance(user.get("login"), str)
+               for user in issue["assignees"]):
+            result.missing_sources.append("invalid issue assignee identity")
         result.body = issue.get("body") or ""
         result.labels = [
             label["name"]
@@ -100,6 +126,11 @@ class GitHubIssueInspector:
                 )
             )
         result.restrictions.extend(RESTRICTION.findall(result.body))
+        for label in result.labels:
+            if CLAIM_LABEL.fullmatch(label.replace('_', ' ').strip()):
+                result.competing_work_found = True
+                result.evidence.append(Evidence(kind="claim_label", source="github_issue",
+                                                url=candidate.url, observed_at=now, detail=label))
         if result.state != "open":
             return result
         if issue.get("comments", 0):
@@ -108,11 +139,45 @@ class GitHubIssueInspector:
                 result.checked_sources.append("issue comments")
                 for comment in comments:
                     if not isinstance(comment, dict):
+                        result.missing_sources.append("invalid issue comment object")
                         continue
                     body = comment.get("body") or ""
                     if not isinstance(body, str):
                         result.missing_sources.append("invalid issue comment body")
                         continue
+                    trusted = comment.get("author_association") in {
+                        "OWNER", "MEMBER", "COLLABORATOR",
+                    }
+                    confirmed = trusted and CONFIRMED_CLAIM.search(body)
+                    ambiguous = CLAIM_REQUEST.search(body)
+                    if confirmed:
+                        if re.search(r"\b(?:not|never|no longer)\b", body, re.I):
+                            result.missing_sources.append("contradictory maintainer claim evidence")
+                        else:
+                            result.missing_sources = [s for s in result.missing_sources
+                                if s != "unconfirmed contributor claim request"]
+                            result.competing_work_found = True
+                            result.evidence.append(Evidence(
+                                kind="maintainer_claim", source="github_comment",
+                                url=comment.get("html_url") or candidate.url,
+                                observed_at=self._when(comment, now), detail=body[:300]))
+                    elif ambiguous:
+                        result.missing_sources.append("unconfirmed contributor claim request")
+                    mentioned, _, parsed = reward_mention(body)
+                    if mentioned is None and parsed:
+                        result.missing_sources.append(f"comment reward: {parsed}")
+                    if mentioned is not None and mentioned > 0:
+                        # Only an actual parseable comment date is an announcement timestamp.
+                        try:
+                            announced = datetime.fromisoformat(
+                                comment['created_at'].replace('Z', '+00:00'))
+                            if announced.tzinfo is not None and announced <= now:
+                                result.evidence.append(Evidence(
+                                    kind="reward_announcement", source="github_comment",
+                                    url=comment.get('html_url') or candidate.url,
+                                    observed_at=announced, detail=body[:300]))
+                        except (KeyError, ValueError, TypeError, AttributeError):
+                            pass
                     if TERMINAL.search(body):
                         result.terminal_reason = body[:300]
                         result.evidence.append(
@@ -124,7 +189,7 @@ class GitHubIssueInspector:
                                 detail=body[:300],
                             )
                         )
-                    if CLAIM.search(body):
+                    if CLAIM.search(body) and not ambiguous:
                         result.competing_work_found = True
                         result.evidence.append(
                             Evidence(
@@ -144,7 +209,10 @@ class GitHubIssueInspector:
             events = await self._list(f"{base}/timeline")
             result.checked_sources.append("issue timeline")
             for event in events:
-                if not isinstance(event, dict) or event.get("event") not in (
+                if not isinstance(event, dict):
+                    result.missing_sources.append("invalid issue timeline object")
+                    continue
+                if event.get("event") not in (
                     "cross-referenced",
                     "connected",
                 ):

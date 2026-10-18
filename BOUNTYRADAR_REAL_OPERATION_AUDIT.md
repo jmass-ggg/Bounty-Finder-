@@ -3,6 +3,10 @@
 Audit date: 2026-10-18. Local scheduling times below use Asia/Kathmandu (UTC+05:45).
 Issue timestamps use UTC. Existing repository work and production data were preserved.
 
+Subsequent configuration history: the minimum was changed to **USD 5** at the user's
+request, then restored to **0** by the later authorized continuation. See
+[BOUNTYRADAR_PRODUCTION_REVIEW.md](BOUNTYRADAR_PRODUCTION_REVIEW.md) for current status.
+
 **Overall: NO-GO for dependable real funded-bounty alerts.** Automatic candidate
 collection and real Gmail submission/inbox receipt work. All-positive-price support
 is implemented and the production minimum was changed to zero with explicit approval.

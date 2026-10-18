@@ -51,6 +51,8 @@ class ScanResult(BaseModel):
     invalid_items: int = 0
     requests: int = 0
     covered_until: datetime | None = None
+    # This overlapping priority lane has its own cursor, not historical coverage.
+    fresh_unprocessed_windows: list[UnprocessedWindow] = Field(default_factory=list)
 
     @property
     def complete(self) -> bool:

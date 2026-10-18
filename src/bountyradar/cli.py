@@ -117,15 +117,10 @@ async def _run_locked(
     started_at = clock().astimezone(UTC)
     state = RunState(settings.database_path) if not dry_run else None
     last_complete = state.last_complete_at() if state else None
-    hours = None
-    if last_complete is not None:
+    hours = settings.initial_lookback_hours
+    if last_complete is not None and last_complete <= started_at:
         elapsed_hours = max(0, (started_at - last_complete).total_seconds() / 3600)
-        hours = max(
-            settings.created_lookback_hours,
-            settings.updated_lookback_hours,
-            settings.funding_lookback_hours,
-            elapsed_hours + settings.scan_interval_seconds / 3600,
-        )
+        hours = elapsed_hours + settings.scan_interval_seconds / 3600
     try:
         return await _process_run(
             settings,
@@ -179,10 +174,50 @@ async def _process_run(
         inspector.progress = state
         verifier = Verifier(inspector, settings, funding_provider, clock=clock)
         work = (
-            state.verification_queue(settings.max_verifications_per_scan)
+            state.verification_queue(
+                settings.max_verifications_per_scan, now=clock(),
+                refresh_minutes=5 if funding_provider else 60,
+            )
             if state else scan.candidates
         )
-        results = await verifier.verify_many(work)
+        recent_count = getattr(state, "queue_recent_count", len(work))
+        if (state and 0 < recent_count < len(work)
+                and settings.github_max_inspection_requests_per_scan >= 2):
+            # Reserve actual HTTP/time capacity as well as queue slots for historical work.
+            inspection_started = inspector.monotonic()
+            recent_settings = settings.model_copy(update={
+                "github_max_inspection_requests_per_scan": max(
+                    1, settings.github_max_inspection_requests_per_scan * 3 // 4),
+                "github_inspection_timeout_seconds": (
+                    settings.github_inspection_timeout_seconds * .75),
+            })
+            inspector.settings = recent_settings
+            results = await verifier.verify_many(work[:recent_count], preserve_order=True)
+            used_requests = inspector.requests
+            remaining_seconds = max(.001, settings.github_inspection_timeout_seconds
+                                    - (inspector.monotonic() - inspection_started))
+            historical_settings = settings.model_copy(update={
+                "github_max_inspection_requests_per_scan": max(
+                    0, settings.github_max_inspection_requests_per_scan - used_requests),
+                "github_inspection_timeout_seconds": remaining_seconds,
+            })
+            older_inspector = GitHubIssueInspector(client, historical_settings, clock=clock)
+            older_inspector.progress = state
+            older_inspector.next_request_at = inspector.next_request_at
+            older_inspector.rate_limit_reset = inspector.rate_limit_reset
+            older_verifier = Verifier(older_inspector, settings, funding_provider, clock=clock)
+            results.extend(await older_verifier.verify_many(
+                work[recent_count:], preserve_order=True))
+            older_inspector.requests += used_requests
+            older_inspector.settings = settings
+            older_inspector.deadline = min(
+                older_inspector.deadline or float("inf"),
+                older_inspector.monotonic() + remaining_seconds,
+            )
+            inspector = older_inspector
+            verifier = older_verifier
+        else:
+            results = await verifier.verify_many(work, preserve_order=state is not None)
         if state:
             checked_ids = {item.candidate.source_issue_id for item in results}
             tracked = state.tracked_eligible_candidates(settings.max_rechecks_per_scan)
@@ -234,12 +269,17 @@ async def _process_run(
             )
         for source_name, reason in scan.failures.items():
             print(json.dumps({"event": "source_failure", "source": source_name, "reason": reason}))
+        for source_name, source_result in scan.results.items():
+            if source_result.fresh_unprocessed_windows:
+                print(json.dumps({"event": "fresh_search_deferred", "source": source_name,
+                                  "incomplete": len(source_result.fresh_unprocessed_windows)}))
         return (
             len(scan.candidates),
             eligible,
             queued,
             sent,
-            len(scan.unprocessed_windows) + scan.invalid_items + len(scan.failures),
+            len(scan.unprocessed_windows) + scan.invalid_items + len(scan.failures)
+            + sum(len(r.fresh_unprocessed_windows) for r in scan.results.values()),
             failures,
         )
 

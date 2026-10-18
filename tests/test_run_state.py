@@ -200,7 +200,7 @@ async def test_crash_during_enqueue_keeps_checkpoint_for_replay(tmp_path, monkey
         def __init__(self, _inspector, _settings, _provider, *, clock):
             pass
 
-        async def verify_many(self, candidates):
+        async def verify_many(self, candidates, *, preserve_order=False):
             return [verification] if candidates else []
 
     monkeypatch.setattr(cli, "GitHubDiscovery", FakeDiscovery)

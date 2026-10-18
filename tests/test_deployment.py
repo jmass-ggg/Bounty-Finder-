@@ -362,8 +362,11 @@ async def test_default_budgets_fit_interval_and_retain_dense_backlog(
     await cli._run(
         settings, False, clock=lambda: NOW + timedelta(minutes=5, seconds=elapsed[0])
     )
-    assert searches[0].url.params["q"] == continuation.query
-    assert int(searches[0].url.params["page"]) == continuation.page
+    # Bounded fresh work precedes, rather than replaces, the historical continuation.
+    assert searches[0].url.params["q"] != continuation.query
+    historical_first = searches[settings.github_fresh_search_requests]
+    assert historical_first.url.params["q"] == continuation.query
+    assert int(historical_first.url.params["page"]) == continuation.page
     assert len(searches) <= settings.github_max_search_requests_per_scan
     assert len(inspections) <= settings.github_max_inspection_requests_per_scan
     assert elapsed[0] < settings.run_timeout_seconds

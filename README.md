@@ -1,5 +1,8 @@
 # BountyRadar
 
+For the current implementation review, real SMTP/inbox evidence and remaining
+deployment/backlog limits, see [BOUNTYRADAR_PRODUCTION_REVIEW.md](BOUNTYRADAR_PRODUCTION_REVIEW.md).
+
 Local-first discovery and evidence review of potential open-source bounty issues.
 Phase 1 searches public open GitHub issues through the official REST Search API.
 Phase 3 adds issue availability inspection, evidence classification, ranking and
@@ -49,9 +52,9 @@ persists unprocessed queries/pages for a later run. Search spacing is at least
 `BOUNTYRADAR_GITHUB_MIN_REQUEST_INTERVAL_SECONDS`. GitHub's rate headers and
 `Retry-After` are honored within the configured maximum wait; failed or
 incomplete windows are reported. `BOUNTYRADAR_MIN_REWARD_USD=0` (the default)
-accepts every strictly positive USD reward, including fractional amounts. Set a
-larger value only to opt into a floor. Existing `.env` files with a value of 25
-must be explicitly updated; defaults do not override configured values.
+accepts every strictly positive USD reward, including $0.01 and $1. A configured
+larger floor is supported. Existing `.env` files must be explicitly updated;
+defaults do not override configured values.
 The floor is a later qualification threshold, not a discovery filter. Discovery keeps even
 candidates without a parsed amount for later review.
 
@@ -119,11 +122,43 @@ become a new availability transition. An issue that closes and reopens entirely
 between scans may still escape observation. Previously discovered but unverified
 claims also receive rotating verification, so an injected funding provider can
 detect new external funding without a GitHub update. The main durable queue
-checks up to `BOUNTYRADAR_MAX_VERIFICATIONS_PER_SCAN` (default 20), serving
-never-verified candidates first and then rotating by last check time. Previously
+checks up to `BOUNTYRADAR_MAX_VERIFICATIONS_PER_SCAN` (default 20), prioritizing
+newly recovered and recently changed issues while reserving 25% (rounded down,
+at least one slot) for oldest due work. With a single-slot budget, every fourth
+run serves oldest work; the rotation persists across restart. Unchanged complete
+results are normally revisited hourly, incomplete results after five minutes;
+an injected funding provider uses five-minute refreshes. Previously
 eligible issues receive up to `BOUNTYRADAR_MAX_RECHECKS_PER_SCAN` (default 5)
 additional checks. Large or continually growing backlogs can delay revisits.
 An old issue never discovered by GitHub search cannot be revisited this way.
+
+Scheduled `run` uses an eight-hour initial lookback only without a valid checkpoint
+(`BOUNTYRADAR_INITIAL_LOOKBACK_HOURS`). Thereafter it searches the actual elapsed
+interval plus five minutes of overlap, including outages longer than 8/12/24 hours.
+Unfinished frozen windows always retain their cursors. During catch-up, a separate
+durable recent-search lane covers the last two hours, using at most eight attempts
+and 20 seconds, further capped at one-quarter of the total search budget. Historical
+work retains the rest. Both lanes share pacing, cooldowns, request/time ceilings and
+issue identity. A partial recent lane is logged and makes the run exit incomplete,
+but cannot advance historical coverage. Both cursors are retained independently.
+These controls bound work; they cannot guarantee that an ever-growing backlog drains.
+GitHub indexing delayed beyond the overlap/recent window can still hide issues.
+
+Before queuing an alert, the GitHub inspector checks current issue data, assignees,
+busy labels, comments and relevant linked PRs. Owner/member/collaborator confirmations
+and supported provider claim states block alerts. A contributor asking permission
+without confirmation is UNKNOWN and deferred. Claim classification is
+`CLAIMED`, `APPARENTLY_UNCLAIMED` or `UNKNOWN`; apparently unclaimed means only that
+no claim was found in the inspected sources. Closed/expired/unknown cases cannot alert.
+No authoritative provider is bundled; provider status tests use injected fixtures.
+
+Unverified reward amounts are parsed again from current issue content and available
+dated reward comments. Distinct conflicting amounts/currencies or malformed amounts
+are deferred rather than choosing a price. Edited/deleted rewards and decreases
+invalidate or defer pending stale alerts. Availability and the unverified amount are
+checked again before submission. Comment dates identify observed reward evidence;
+an arbitrary issue update never proves that a new reward was announced. An edited
+comment's original creation date cannot establish when a reward was first added.
 
 Default execution controls:
 

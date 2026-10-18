@@ -18,7 +18,7 @@ from bountyradar.settings import Settings
 from bountyradar.verification import Verifier
 from bountyradar.verification_models import Category, Evidence, FundingRecord
 
-AMOUNTS = ["1", "5", "10", "15", "20", "25", "50", "100", "500", "1000", "0.001"]
+AMOUNTS = ["0.01", "1", "5", "10", "15", "20", "25", "50", "100", "500", "1000", "0.001"]
 
 
 def options(**changes):
@@ -28,6 +28,16 @@ def options(**changes):
         trusted_funding_hosts=["funding.example"],
         trusted_funding_providers=["trusted_api"],
     ) | changes))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amount,eligible", [("4.99", False), ("5", True), ("10", True)])
+async def test_configured_five_dollar_notification_floor(amount, eligible):
+    s = options(min_reward_usd=5,
+                notification_mode="include_unverified")
+    c = candidate(potential_reward_amount=Decimal(amount), body=f"Bounty ${amount}")
+    r = await Verifier(FakeInspector(), s, clock=lambda: NOW).verify(c)
+    assert eligible_for_delivery(r, s, NOW) is eligible
 
 
 @pytest.mark.asyncio

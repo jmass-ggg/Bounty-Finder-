@@ -26,6 +26,12 @@ class Availability(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class ClaimStatus(StrEnum):
+    CLAIMED = "CLAIMED"
+    APPARENTLY_UNCLAIMED = "APPARENTLY_UNCLAIMED"
+    UNKNOWN = "UNKNOWN"
+
+
 class Evidence(BaseModel):
     kind: str
     source: str
@@ -98,6 +104,31 @@ class VerificationResult(BaseModel):
     notification_eligible: bool = False
     high_priority_email_eligible: bool = False
     filter_reasons: list[str] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def claim_status(self) -> ClaimStatus:
+        if self.assignees:
+            return ClaimStatus.CLAIMED
+        if (not any("contradictory" in s for s in self.missing_sources)
+                and any(e.kind in {"maintainer_claim", "claim_label", "active_linked_pr",
+                                   "provider_claim"} for e in self.evidence)):
+            return ClaimStatus.CLAIMED
+        missing = [s for s in self.missing_sources
+                   if s != "authoritative funding provider not configured"]
+        if missing:
+            return ClaimStatus.UNKNOWN
+        if self.availability in {Availability.ASSIGNED, Availability.CONTESTED}:
+            return ClaimStatus.CLAIMED
+        if self.availability == Availability.AVAILABLE:
+            return ClaimStatus.APPARENTLY_UNCLAIMED
+        return ClaimStatus.UNKNOWN
+
+    @computed_field
+    @property
+    def reward_announced_at(self) -> datetime | None:
+        dates = [e.observed_at for e in self.evidence if e.kind == "reward_announcement"]
+        return max(dates) if dates else None
 
     @computed_field
     @property

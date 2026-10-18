@@ -294,6 +294,7 @@ async def test_github_inspection_claim_cancel_and_relevant_pr():
                 "state": "open",
                 "assignees": [],
                 "body": "Contributors must sign the CLA",
+                "title": "Bounty: fix parser",
                 "labels": [],
                 "comments": 2,
             },
@@ -377,7 +378,8 @@ async def test_inspection_missing_timeline_and_etag_cache():
             httpx.Response(
                 200,
                 headers={"ETag": '"v1"'},
-                json={"state": "open", "assignees": [], "comments": 0},
+                json={"state": "open", "title": "Bounty: fix parser", "labels": [],
+                      "assignees": [], "comments": 0},
             ),
             httpx.Response(304),
         ]
@@ -506,6 +508,7 @@ async def test_unrelated_cross_reference_does_not_block_funded_issue():
                 "state": "open",
                 "assignees": [],
                 "body": "Reward $100",
+                "title": "Bounty: fix parser",
                 "labels": [],
                 "comments": 0,
             },

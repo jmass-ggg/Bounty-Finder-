@@ -23,6 +23,10 @@ class Settings(BaseSettings):
 
     # Zero disables the configured floor; monetary eligibility still requires > 0.
     min_reward_usd: Decimal = Field(default=Decimal("0"), ge=0, allow_inf_nan=False)
+    initial_lookback_hours: float = Field(default=8, gt=0, allow_inf_nan=False)
+    fresh_lookback_hours: float = Field(default=2, gt=0, allow_inf_nan=False)
+    github_fresh_search_requests: int = Field(default=8, gt=0)
+    github_fresh_search_timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
     scan_interval_seconds: int = Field(default=300, gt=0)
     run_timeout_seconds: float = Field(default=240, gt=0, allow_inf_nan=False)
     database_path: Path = Path("data/bountyradar.sqlite3")
