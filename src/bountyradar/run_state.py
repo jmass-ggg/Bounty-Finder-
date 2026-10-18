@@ -155,11 +155,11 @@ class RunState:
         recent = self.db.execute(
             base + """ AND (julianday(d.seen_at) >= julianday(?) OR
                 julianday(json_extract(d.payload_json, '$.updated_at')) >= julianday(?))
-                ORDER BY CASE WHEN v.source_issue_id IS NULL AND
+                ORDER BY CASE WHEN CAST(json_extract(d.payload_json,
+                    '$.potential_reward_amount') AS REAL)>0 THEN 0 ELSE 1 END,
+                CASE WHEN v.source_issue_id IS NULL AND
                     julianday(d.seen_at) >= julianday(?) THEN 0 ELSE 1 END,
                 json_extract(d.payload_json, '$.updated_at') DESC,
-                CASE WHEN CAST(json_extract(d.payload_json,
-                    '$.potential_reward_amount') AS REAL)>0 THEN 0 ELSE 1 END,
                 v.checked_at, d.source_issue_id LIMIT ?""",
             (refresh, retry, cutoff, cutoff, arrived, limit - reserve),
         ).fetchall()

@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 import math
 import random
-import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -24,6 +22,8 @@ from bountyradar.models import (
     SearchWindow,
     UnprocessedWindow,
 )
+from bountyradar.rewards import assess_issue_reward
+from bountyradar.rewards import reward_mention as reward_mention
 from bountyradar.run_state import SearchLane
 from bountyradar.settings import Settings
 
@@ -33,48 +33,6 @@ if TYPE_CHECKING:
 API_URL = "https://api.github.com/search/issues"
 API_VERSION = "2022-11-28"
 MAX_RESULTS = 1000
-AMOUNT = re.compile(
-    r"(?<![\w−-])(?:(?P<symbol>[$€£₹])\s*(?P<symbol_amount>\d[\d,]*(?:\.\d+)?)"
-    r"|(?P<code>USD|EUR|GBP|INR|NPR|JPY|CAD|AUD|CHF|CNY|BTC|ETH|USDC|USDT)"
-    r"\s*(?:[$€£₹]\s*)?(?P<code_amount>\d[\d,]*(?:\.\d+)?)"
-    r"|(?P<suffix_amount>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<suffix_code>USD|EUR|GBP|INR|NPR|JPY|CAD|AUD|CHF|CNY|BTC|ETH|USDC|USDT))\b",
-    re.I,
-)
-REWARD_CONTEXT = re.compile(r"\b(?:bounty|reward|paid|payment|payout|funded|prize)\b", re.I)
-
-
-def reward_mention(text: str) -> tuple[Decimal | None, str | None, str | None]:
-    """Extract a provisional amount/currency without a conversion or funding claim."""
-    found: dict[tuple[Decimal, str], str] = {}
-    for match in AMOUNT.finditer(text):
-        around = text[max(0, match.start() - 60):match.end() + 30]
-        if not REWARD_CONTEXT.search(around):
-            continue
-        if re.search(r"[-−][$€£₹]$", text[max(0, match.start() - 2):match.start()]):
-            continue
-        if re.search(r"\b(?:costs?|price|fee|subscription|budget)\b",
-                     text[max(0, match.start() - 30):match.end() + 20], re.I):
-            continue
-        number = match['symbol_amount'] or match['code_amount'] or match['suffix_amount']
-        if (not re.fullmatch(r"(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?", number)
-                or re.match(r"[.,]\d", text[match.end():])):
-            return None, None, "ambiguous or malformed reward amount"
-        currency = (match['code'] or match['suffix_code'] or
-                    {'$': 'USD', '€': 'EUR', '£': 'GBP', '₹': 'INR'}[match['symbol']])
-        if match['symbol']:
-            explicit = re.match(r"\s+([A-Z]{3,5})\b", text[match.end():])
-            if explicit:
-                code = explicit.group(1)
-                if code not in {"USD", "EUR", "GBP", "INR", "NPR", "JPY", "CAD", "AUD",
-                                "CHF", "CNY", "BTC", "ETH", "USDC", "USDT"}:
-                    return None, None, "unsupported reward currency"
-                currency = code
-        found[(Decimal(number.replace(',', '')), currency.upper())] = match.group(0)
-    if len(found) != 1:
-        return None, None, "ambiguous reward amounts or currencies" if found else None
-    (amount, currency), mention = next(iter(found.items()))
-    return amount, currency, mention
 
 
 class DiscoveryError(Exception):
@@ -233,38 +191,27 @@ class GitHubDiscovery:
                     page = await self._page(window.query, window.page)
                 total = page["total_count"]
                 if total > MAX_RESULTS or page["incomplete_results"]:
-                    midpoint = (window.start + (window.end - window.start) / 2).replace(
-                        microsecond=0
-                    )
-                    if not window.start < midpoint < window.end:
-                        raise DiscoveryError(
-                            "incomplete results or search exceeds 1000-result limit"
-                        )
-                    windows[:1] = [
-                        window.model_copy(update={"end": midpoint, "page": 1, "total": None}),
-                        window.model_copy(update={
-                            "start": midpoint + timedelta(seconds=1), "page": 1, "total": None,
-                        }),
-                    ]
+                    windows[:1] = self._split(window)
                 else:
                     bad = self._collect(page["items"], page_candidates)
                     invalid += bad
                     if bad:
                         raise DiscoveryError("invalid issue objects; page retained for retry")
                     if window.total is not None and total != window.total:
+                        # Wide, changing result sets can restart forever. Narrow
+                        # the query while retaining all previously saved findings.
                         window.page, window.total = 1, None
-                        raise DiscoveryError(
-                            "search count changed during pagination; restarting window"
-                        )
-                    expected = min(100, max(0, total - (window.page - 1) * 100))
-                    if len(page["items"]) < expected:
-                        raise DiscoveryError("search returned fewer items than total_count")
-                    if window.page * 100 < total:
-                        windows[0] = window.model_copy(update={
-                            "page": window.page + 1, "total": total,
-                        })
+                        windows[:1] = self._split(window)
                     else:
-                        windows.pop(0)
+                        expected = min(100, max(0, total - (window.page - 1) * 100))
+                        if len(page["items"]) < expected:
+                            windows[:1] = self._split(window)
+                        elif window.page * 100 < total:
+                            windows[0] = window.model_copy(update={
+                                "page": window.page + 1, "total": total,
+                            })
+                        else:
+                            windows.pop(0)
             except (RateLimited, SearchBudgetExceeded, TimeoutError) as exc:
                 for remaining in windows:
                     pending.append(
@@ -295,6 +242,19 @@ class GitHubDiscovery:
             requests=self.requests - initial_requests,
             covered_until=covered_until,
         )
+
+    @staticmethod
+    def _split(window: SearchWindow) -> list[SearchWindow]:
+        """Narrow an unstable query without certifying missing results as covered."""
+        midpoint = (window.start + (window.end - window.start) / 2).replace(microsecond=0)
+        if not window.start < midpoint < window.end:
+            raise DiscoveryError("incomplete or unstable results in indivisible search window")
+        return [
+            window.model_copy(update={"end": midpoint, "page": 1, "total": None}),
+            window.model_copy(update={
+                "start": midpoint + timedelta(seconds=1), "page": 1, "total": None,
+            }),
+        ]
 
     @staticmethod
     def _merge(new: dict[int, BountyCandidate], candidates: dict[int, BountyCandidate]) -> None:
@@ -471,13 +431,14 @@ class GitHubDiscovery:
         assignees = [person["login"] for person in item.get("assignees", [])]
         if (item.get("repository") or {}).get("private") is True:
             return None
-        text = " ".join((title, body))
-        amount, currency, mention = reward_mention(text)
+        assessment = assess_issue_reward(title, body, url)
+        amount, currency = assessment.amount, assessment.currency
         evidence = [url]
-        if not REWARD_CONTEXT.search(" ".join((title, body, *labels))):
+        evidence.append(f"{assessment.classification}: {assessment.explanation}")
+        if amount is None:
             evidence.append("search match may be in comments; reward unverified")
-        if mention:
-            evidence.append(f"provisional amount mention: {mention}")
+        if amount is not None:
+            evidence.append(f"provisional amount mention: {amount} {currency}")
         return BountyCandidate(
             source_issue_id=item["id"],
             repository=repository,
