@@ -109,10 +109,10 @@ policy was changed. Advertised offers remain **UNVERIFIED** without a provider.
 
 - Before-fix reproduction against `651ef61`: expected failure, extracting
   `Decimal('11.00')` from the exact incident fixture.
-- Final focused monitoring regressions: **93 passed in 1.64 seconds**.
-- Final complete offline suite: **380 passed in 47.55 seconds**.
+- Final focused monitoring regressions: **97 passed in 1.72 seconds**.
+- Final complete offline suite: **384 passed in 49.76 seconds**.
 - The first deployment passed 170 focused tests; the final deployed-code focused
-  suite passed **178 tests in 28.27 seconds**.
+  suite passed **182 tests in 28.16 seconds**.
 - **24** explicit offer cases recognized through parsing, verification, and
   notification eligibility, including every requested example and tiny rewards.
 - **33** unrelated/historical financial cases rejected, plus mixed-price,
@@ -124,11 +124,15 @@ policy was changed. Advertised offers remain **UNVERIFIED** without a provider.
 - Both real incident fixtures fail against their respective earlier parsers and
   pass with the final fix. Same-task linked offers and credible comment offers
   remain supported; foreign-task offers cannot become current-task rewards.
+- Three additional failing reproductions verified that bounded context could
+  manufacture `bounty`, `reward`, or `prize` from a longer word across long
+  whitespace. The final parser preserves original token boundaries. A separate
+  regression ensures target URLs are inspected in full, beyond excerpt limits.
 
 ## E. Production Deployment
 
 Reviewed application revision:
-`502255d293df9c963b4a88e910ebbd36a08a0dc0`.
+`229846217cd5297576a8e225cd10a99ca6164418`.
 
 The production checkout remains on main commit
 `651ef61c56a88178b3e1802ce1b1e523226cb485` with the reviewed source patch applied.
@@ -227,7 +231,8 @@ Production data, logs and backups are excluded from the feature commit.
 
 Branch: `fix/fresh-monetary-priority`.
 Initial parser commit: `ff7b5186c64e3dbcee42cc784a2b253fa822d426`.
-Final code commit: `502255d293df9c963b4a88e910ebbd36a08a0dc0`.
+Issue-binding commit: `502255d293df9c963b4a88e910ebbd36a08a0dc0`.
+Final code commit: `229846217cd5297576a8e225cd10a99ca6164418`.
 The branch is published to `jmass-ggg/Bounty-Finder-`; no force-push or main
 merge was performed. Review must reconcile the live source patch with the
 eventual reviewed merge while preserving `.env` and all runtime data.
