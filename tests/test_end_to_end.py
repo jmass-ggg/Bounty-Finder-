@@ -146,7 +146,7 @@ async def test_funded_issue_lifecycle_five_minute_rescan_increase_and_restart(tm
     assert first == (1, 1, 1, 1, 0, 0)
     assert search.call_count == 2  # Created and updated searches return the same issue.
     assert len(sent) == 1
-    assert "USD 100" in sent[0]["Subject"]
+    assert "$100 USD" in sent[0]["Subject"]
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT count(*) FROM discovered_issues").fetchone()[0] == 1
         assert connection.execute("SELECT count(*) FROM verification_results").fetchone()[0] == 1
@@ -205,7 +205,7 @@ async def test_funded_issue_lifecycle_five_minute_rescan_increase_and_restart(tm
         0,
     )
     assert len(sent) == 2
-    assert "USD 150" in sent[1]["Subject"]
+    assert "$150 USD" in sent[1]["Subject"]
     assert (
         "https://funding.example/records/8"
         in sent[1].get_body(preferencelist=("plain",)).get_content()

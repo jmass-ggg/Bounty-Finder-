@@ -83,6 +83,10 @@ async def test_verification_queue_rotates_past_newest_and_recovers_offline(tmp_p
     inspected = []
 
     class Inspector(FakeInspector):
+        requests = 0
+        next_request_at = 0
+        rate_limit_reset = None
+
         async def inspect(self, item):
             inspected.append(item.source_issue_id)
             return await super().inspect(item)
@@ -126,7 +130,7 @@ async def test_all_github_closing_forms_block_competing_pr(text, respx_mock):
     base = "https://api.github.com/repos/acme/tool"
     respx_mock.get(f"{base}/issues/8").respond(
         200, json={"state": "open", "title": "Bounty", "comments": 0,
-                   "labels": [], "assignees": []}
+                   "labels": [], "assignees": [], "body": ""}
     )
     respx_mock.get(f"{base}/issues/8/timeline").respond(
         200,

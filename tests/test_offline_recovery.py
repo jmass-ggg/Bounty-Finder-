@@ -473,7 +473,7 @@ async def test_delayed_indexing_in_overlap_and_committed_checkpoint_restart(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('missing', ['title', 'state', 'labels', 'assignees', 'comments'])
+@pytest.mark.parametrize('missing', ['title', 'state', 'labels', 'assignees', 'comments', 'body'])
 async def test_missing_live_issue_fields_cannot_prove_unclaimed(respx_mock, missing):
     data = issue(8, comments=0)
     del data[missing]

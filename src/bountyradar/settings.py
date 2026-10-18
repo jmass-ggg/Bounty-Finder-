@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
     smtp_delivery_timeout_seconds: float = Field(default=20, gt=0, le=240, allow_inf_nan=False)
     email_daily_cap: int = Field(default=20, gt=0)
+    email_per_scan_cap: int = Field(default=3, gt=0)
+    notification_initial_lookback_hours: float = Field(
+        default=24, gt=0, allow_inf_nan=False,
+    )
     email_max_attempts: int = Field(default=3, gt=0, le=10)
     email_retry_base_seconds: int = Field(default=60, gt=0)
     email_sending_lease_seconds: int = Field(default=300, gt=0)

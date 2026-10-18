@@ -2,6 +2,7 @@
 Description=Scan GitHub bounties every five minutes
 
 [Timer]
+OnStartupSec=30s
 OnCalendar=*:0/5
 Persistent=true
 AccuracySec=1s

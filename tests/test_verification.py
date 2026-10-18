@@ -379,7 +379,7 @@ async def test_inspection_missing_timeline_and_etag_cache():
                 200,
                 headers={"ETag": '"v1"'},
                 json={"state": "open", "title": "Bounty: fix parser", "labels": [],
-                      "assignees": [], "comments": 0},
+                      "assignees": [], "comments": 0, "body": ""},
             ),
             httpx.Response(304),
         ]

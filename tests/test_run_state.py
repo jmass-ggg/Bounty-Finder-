@@ -197,7 +197,7 @@ async def test_crash_during_enqueue_keeps_checkpoint_for_replay(tmp_path, monkey
             return ScanResult(candidates=[candidate], unprocessed_windows=[])
 
     class FakeVerifier:
-        def __init__(self, _inspector, _settings, _provider, *, clock):
+        def __init__(self, _inspector, _settings, _provider, *, clock, record=None):
             pass
 
         async def verify_many(self, candidates, *, preserve_order=False):

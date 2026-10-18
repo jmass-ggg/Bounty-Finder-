@@ -130,6 +130,7 @@ async def test_foreign_currency_can_opt_into_all_positive_floor():
 def test_platform_listing_remains_unverified_and_funding_upgrade_is_new_event(tmp_path):
     s = options(notification_mode="include_unverified")
     r = result(amount="5", category=Category.REWARD_CLAIMED)
+    r.candidate.created_at = NOW
     r.evidence = [Evidence(kind="platform_listing", source="fixture", url="https://example.com",
                            observed_at=NOW, detail="Unverified fixture listing")]
     assert r.notification_classification == "PLATFORM_LISTED_UNVERIFIED"
@@ -158,6 +159,7 @@ async def test_four_five_minute_intervals_source_to_mock_smtp(tmp_path, monkeypa
 
     def item(n):
         return issue(n, body=f"Bounty reward ${amounts[n]}", comments=0,
+                     created_at=NOW.isoformat(),
                      updated_at=clock[0].isoformat())
 
     respx_mock.get(API_URL).mock(side_effect=lambda _: httpx.Response(

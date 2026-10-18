@@ -2,6 +2,9 @@
 
 For the current implementation review, real SMTP/inbox evidence and remaining
 deployment/backlog limits, see [BOUNTYRADAR_PRODUCTION_REVIEW.md](BOUNTYRADAR_PRODUCTION_REVIEW.md).
+The subsequent production Gmail implementation is prepared for Codex review in
+[BYTEASK_IMPLEMENTATION_HANDOFF.md](BYTEASK_IMPLEMENTATION_HANDOFF.md).
+Its service and private settings must be deployed only after review and merge.
 
 Local-first discovery and evidence review of potential open-source bounty issues.
 Phase 1 searches public open GitHub issues through the official REST Search API.
@@ -138,7 +141,9 @@ interval plus five minutes of overlap, including outages longer than 8/12/24 hou
 Unfinished frozen windows always retain their cursors. During catch-up, a separate
 durable recent-search lane covers the last two hours, using at most eight attempts
 and 20 seconds, further capped at one-quarter of the total search budget. Historical
-work retains the rest. Both lanes share pacing, cooldowns, request/time ceilings and
+work retains the rest. The recent lane rotates through every configured term,
+label and monetary query, with its own durable continuation.
+Both lanes share pacing, cooldowns, request/time ceilings and
 issue identity. A partial recent lane is logged and makes the run exit incomplete,
 but cannot advance historical coverage. Both cursors are retained independently.
 These controls bound work; they cannot guarantee that an ever-growing backlog drains.
@@ -159,6 +164,12 @@ invalidate or defer pending stale alerts. Availability and the unverified amount
 checked again before submission. Comment dates identify observed reward evidence;
 an arbitrary issue update never proves that a new reward was announced. An edited
 comment's original creation date cannot establish when a reward was first added.
+Conflicting issue/comment prices defer alerts. A contributor's self-reported work
+without accepted assignment or maintainer confirmation also remains UNKNOWN.
+Completed issue verifications and their alert transitions persist incrementally;
+interruption while inspecting a later issue does not lose earlier queued alerts.
+When email is enabled with at least four inspection requests available, 25% of
+inspection request/time capacity is reserved for pre-delivery revalidation.
 
 Default execution controls:
 
@@ -233,6 +244,41 @@ No external platform adapter is bundled. Non-USD amounts are retained without
 conversion; configure their currency in `BOUNTYRADAR_ALLOWED_CURRENCIES` and an
 explicit floor (zero for all positive amounts) in `BOUNTYRADAR_CURRENCY_MINIMUMS`.
 
+On first opening the outbox in `include_unverified` mode, SQLite records a fixed
+activation boundary: current UTC minus
+`BOUNTYRADAR_NOTIFICATION_INITIAL_LOOKBACK_HOURS` (default 24).
+An initial unverified alert requires an issue created since that boundary, or an
+unedited owner/member/collaborator reward comment created since it. Updating an old
+issue alone does not establish a new reward. The boundary never moves on restart:
+an issue missed during subsequent days offline is still eligible for catch-up.
+Existing pending alerts remain durable. Older promises are retained for review
+without creating an initial alert merely because notification mode changed.
+Confirmed funding follows its separate trusted-evidence policy.
+
+`BOUNTYRADAR_EMAIL_PER_SCAN_CAP` defaults to 3 SMTP attempts per invocation;
+`BOUNTYRADAR_EMAIL_DAILY_CAP` defaults to 20 attempts per UTC day.
+Failures and uncertain outcomes spend capacity too; unattempted work stays pending.
+Delivery inspects at most four times the batch cap in due rows, rotates unknown
+evidence to the next scan, and stops before revalidation if the daily cap is reached.
+For initial production activation use 2 per scan and 10 per day. Increasing the
+caps does not bypass availability, price, funding-label or activation checks.
+Unchanged issues retain their initial event identity; a material reward increase,
+new funding evidence or an observed return to availability may create another
+event. Unknown SMTP acceptance is never automatically retried.
+
+Notifications contain escaped multipart HTML/plain text, a mobile-friendly
+“View Bounty on GitHub” button with a validated canonical issue URL, and a text
+link fallback. Unverified emails explicitly say payment and funding are not
+guaranteed. Android/Gmail push behavior depends on the recipient's Gmail and
+device notification settings.
+
+Structured `scan_metrics` records expose new/stored candidate counts, verifications,
+search and inspection HTTP attempts, queue and send counts, delivery outcomes,
+never-verified backlog, incomplete windows, SQLite size, metrics query time and
+observation-to-verification age. Candidate counts are distinct from new rows:
+overlapping searches commonly rediscover existing issues. Observation age measures
+the stored search observation, not GitHub indexing latency or a delivery guarantee.
+
 ## Ubuntu background deployment
 
 The user timer runs at minutes 0, 5, 10, and so on in local time. The laptop must
@@ -240,6 +286,7 @@ be awake and connected to the internet, and the user systemd manager must be
 running. Enabling the timer starts it again on login. Linger was disabled on the
 validated laptop; scanning while logged out is not configured by these scripts.
 Suspension and power-off prevent scans.
+`OnStartupSec=30s` also schedules work after the user manager starts on login.
 `Persistent=true` asks systemd to trigger a missed timer occurrence when the
 timer resumes; BountyRadar's complete-scan checkpoint extends the lookback over
 the actual outage. The repository unit uses `Type=oneshot`, `TimeoutStartSec=270s`,
@@ -250,6 +297,8 @@ budgets below the unit timeout and allow for cleanup. The timer does not start
 another copy of an active service; a direct overlapping `run` logs `scan_delayed`.
 The lock is per database path, so every invocation must use the same configured
 database. See the [systemd timer documentation](https://github.com/systemd/systemd/blob/main/man/systemd.timer.xml).
+`KillMode=control-group` and `SendSIGKILL=yes` ensure the final stop deadline
+also terminates any remaining worker processes.
 
 Set `GITHUB_TOKEN` and the other options in the private `.env` file. The install
 script requires the SQLite path to stay under the project `data/` directory,
