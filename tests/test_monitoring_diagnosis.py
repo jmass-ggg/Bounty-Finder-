@@ -197,9 +197,23 @@ def test_reward_is_bound_to_the_task_being_inspected(body, expected):
             assert entry.issue_url == candidate().url
 
 
+def test_target_url_is_not_truncated_by_the_context_limit():
+    target = "https://github.com/" + "o" * 39 + "/" + "r" * 100 + "/issues/37"
+    assessment = assess_reward(f"Reward $50 for {target}", source_url=candidate().url)
+    assert assessment.amount is None
+    assert assessment.evidence[0].issue_url == target
+
+
 @pytest.mark.parametrize("body", ["Bounty $100 or $50", "Reward USD 5 or EUR 5"])
 def test_alternative_reward_amounts_are_ambiguous(body):
     assert reward_mention(body)[0] is None
+
+
+@pytest.mark.parametrize("word", ["bounty", "reward", "prize"])
+def test_context_limit_cannot_manufacture_an_offer_word(word):
+    padding = " " * (180 - len(word))
+    assert reward_mention("not" + word + padding + "$1")[0] is None
+    assert reward_mention(word + padding + "$1")[0] == Decimal("1")
 
 
 @pytest.mark.asyncio

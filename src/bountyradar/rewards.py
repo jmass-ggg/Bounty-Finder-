@@ -156,9 +156,12 @@ def assess_reward(
         end = end_boundary.start() if end_boundary else len(text)
         start, end = max(start, match.start() - 180), min(end, match.end() + 160)
         before, after = masked[start:match.start()], masked[match.end():end]
+        if start and re.fullmatch(r"\w\w", masked[start - 1:start + 1]):
+            # A bounded excerpt must not create a word boundary inside a token.
+            before = re.sub(r"^\w+", lambda m: " " * len(m.group()), before)
         linked = next((link for link in links
                        if link.start() <= match.start() < link.end()), None)
-        target = linked or TARGET_SUFFIX.match(after)
+        target = linked or TARGET_SUFFIX.match(masked[match.end():])
         target_url = target["url"] if target else issue_url
         span = text[start:end]
         number = match["symbol_amount"] or match["code_amount"] or match["suffix_amount"]
