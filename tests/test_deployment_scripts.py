@@ -21,7 +21,9 @@ def sandbox(tmp_path):
     for name in ("install.sh", "uninstall.sh"):
         # The production script's location guard is adapted only in this disposable copy.
         (scripts / name).write_text(
-            (ROOT / "scripts" / name).read_text().replace(str(ROOT), str(project))
+            (ROOT / "scripts" / name).read_text().replace(
+                "/home/james/bounty/bountyradar", str(project),
+            )
         )
     shutil.copytree(ROOT / "deployment", project / "deployment")
     (project / ".venv").symlink_to(Path(sys.prefix), target_is_directory=True)

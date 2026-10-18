@@ -92,7 +92,34 @@ class NotificationOutbox:
             );
             CREATE INDEX IF NOT EXISTS delivery_attempt_day
                 ON notification_delivery_attempts(attempted_at);
+            CREATE TABLE IF NOT EXISTS notification_policy (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
+        if self.settings.notification_mode == "include_unverified":
+            # A fixed activation boundary, never a rolling age cutoff. Downtime
+            # after activation remains eligible however long the laptop was off.
+            boundary = self.clock() - timedelta(
+                hours=self.settings.notification_initial_lookback_hours,
+            )
+            with self.db:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO notification_policy(key,value) VALUES (?,?)",
+                    ("unverified_since", _iso(boundary)),
+                )
+
+    def _new_reward_in_monitoring_period(self, result: VerificationResult) -> bool:
+        row = self.db.execute(
+            "SELECT value FROM notification_policy WHERE key='unverified_since'"
+        ).fetchone()
+        if row is None or result.notification_classification == "CONFIRMED_FUNDED":
+            return True
+        boundary = _date(row[0])
+        return result.candidate.created_at >= boundary or any(
+            item.kind == "trusted_reward_announcement" and item.observed_at >= boundary
+            for item in result.evidence
+        )
 
     def enqueue(self, result: VerificationResult) -> str | None:
         """Queue only meaningful transitions, without using issue update timestamps as keys."""
@@ -118,9 +145,16 @@ class NotificationOutbox:
             baseline = previous["alert_amount"] if previous else None
             baseline_currency = previous["alert_currency"] if previous else None
             eligible = eligible_for_delivery(result, self.settings, now)
+            # Already queued work survives activation-policy changes. An old
+            # issue update alone is not evidence that a new reward was offered.
+            if eligible and (not previous or previous["alert_amount"] is None):
+                eligible = self._new_reward_in_monitoring_period(result)
             reason = None
             if eligible:
                 if previous is None:
+                    reason = "new_qualified_bounty"
+                elif (previous["alert_amount"] is None
+                      and result.category.value != "FUNDED_EVIDENCE"):
                     reason = "new_qualified_bounty"
                 elif not previous["eligible"]:
                     if previous["availability"] != "AVAILABLE":
@@ -142,6 +176,8 @@ class NotificationOutbox:
                             and Decimal(previous["amount"]) < threshold <= result.amount
                         ):
                             reason = "reward_became_eligible"
+                if reason is None and previous is not None and baseline is None:
+                    reason = "new_qualified_bounty"
                 if reason is None and previous is not None:
                     if (previous["category"] != "FUNDED_EVIDENCE"
                             and result.category.value == "FUNDED_EVIDENCE"):
@@ -249,7 +285,9 @@ class NotificationOutbox:
                 )
             return len(rows)
 
-    def list_entries(self, *, due_only: bool = False) -> list[OutboxEntry]:
+    def list_entries(
+        self, *, due_only: bool = False, limit: int | None = None,
+    ) -> list[OutboxEntry]:
         now = _iso(self.clock())
         where = (
             "WHERE state IN ('pending','retryable_failure') AND next_attempt_at<=?"
@@ -257,9 +295,12 @@ class NotificationOutbox:
             else "WHERE state!='sent'"
         )
         params = (now,) if due_only else ()
-        rows = self.db.execute(
-            f"SELECT * FROM notification_outbox {where} ORDER BY created_at,event_key", params
-        ).fetchall()
+        query = (f"SELECT * FROM notification_outbox {where} "
+                 "ORDER BY next_attempt_at,created_at,event_key")
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (*params, limit)
+        rows = self.db.execute(query, params).fetchall()
         return [
             OutboxEntry(
                 row["event_key"],
@@ -280,6 +321,19 @@ class NotificationOutbox:
             "WHERE attempted_at>=? AND attempted_at<?",
             (_iso(start), _iso(end)),
         ).fetchone()[0]
+
+    def daily_cap_reached(self) -> bool:
+        return self._attempts_today(self.clock().astimezone(UTC)) >= self.settings.email_daily_cap
+
+    def defer(self, event_key: str) -> None:
+        """Rotate unavailable evidence without spending an SMTP attempt."""
+        with self.db:
+            self.db.execute(
+                "UPDATE notification_outbox SET next_attempt_at=? WHERE event_key=? "
+                "AND state IN ('pending','retryable_failure')",
+                (_iso(self.clock() + timedelta(seconds=self.settings.scan_interval_seconds)),
+                 event_key),
+            )
 
     def claim(self, event_key: str) -> bool:
         now = self.clock().astimezone(UTC)

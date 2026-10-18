@@ -5,7 +5,7 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -15,6 +15,7 @@ import httpx
 from bountyradar.discovery import reward_mention
 from bountyradar.models import BountyCandidate
 from bountyradar.settings import Settings
+from bountyradar.verification import EXPIRY_DATE
 from bountyradar.verification_models import Evidence, IssueInspection
 
 API = "https://api.github.com"
@@ -85,7 +86,8 @@ class GitHubIssueInspector:
                 or not isinstance(issue.get("assignees"), list)
                 or not isinstance(issue.get("labels"), list)
                 or type(issue.get("comments")) is not int or issue["comments"] < 0
-                or not isinstance(issue.get("body") or "", str)):
+                or "body" not in issue
+                or (issue["body"] is not None and not isinstance(issue["body"], str))):
             result.missing_sources.append("issue detail: missing or invalid availability fields")
             return result
         now = self.clock()
@@ -94,7 +96,7 @@ class GitHubIssueInspector:
         result.assignees = [
             user["login"]
             for user in (issue.get("assignees") or [])
-            if isinstance(user, dict) and "login" in user
+            if isinstance(user, dict) and isinstance(user.get("login"), str)
         ]
         if any(not isinstance(user, dict) or not isinstance(user.get("login"), str)
                for user in issue["assignees"]):
@@ -103,8 +105,11 @@ class GitHubIssueInspector:
         result.labels = [
             label["name"]
             for label in (issue.get("labels") or [])
-            if isinstance(label, dict) and "name" in label
+            if isinstance(label, dict) and isinstance(label.get("name"), str)
         ]
+        if any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+               for label in issue["labels"]):
+            result.missing_sources.append("invalid issue label")
         result.checked_sources.append("issue detail")
         result.evidence.append(
             Evidence(
@@ -141,7 +146,7 @@ class GitHubIssueInspector:
                     if not isinstance(comment, dict):
                         result.missing_sources.append("invalid issue comment object")
                         continue
-                    body = comment.get("body") or ""
+                    body = comment.get("body")
                     if not isinstance(body, str):
                         result.missing_sources.append("invalid issue comment body")
                         continue
@@ -167,6 +172,18 @@ class GitHubIssueInspector:
                     if mentioned is None and parsed:
                         result.missing_sources.append(f"comment reward: {parsed}")
                     if mentioned is not None and mentioned > 0:
+                        for match in EXPIRY_DATE.finditer(body):
+                            try:
+                                expired = date.fromisoformat(match.group(1)) < now.date()
+                            except ValueError:
+                                continue
+                            if expired:
+                                result.terminal_reason = "reward comment deadline has passed"
+                                result.evidence.append(Evidence(
+                                    kind="expired_deadline", source="github_comment",
+                                    url=comment.get("html_url") or candidate.url,
+                                    observed_at=now, detail=match.group(0),
+                                ))
                         # Only an actual parseable comment date is an announcement timestamp.
                         try:
                             announced = datetime.fromisoformat(
@@ -175,7 +192,20 @@ class GitHubIssueInspector:
                                 result.evidence.append(Evidence(
                                     kind="reward_announcement", source="github_comment",
                                     url=comment.get('html_url') or candidate.url,
-                                    observed_at=announced, detail=body[:300]))
+                                    observed_at=announced, detail=body))
+                                # An edit date cannot establish when a reward was
+                                # added to an older comment. Require an unedited
+                                # maintainer announcement for old-issue alerts.
+                                edited = datetime.fromisoformat(
+                                    comment["updated_at"].replace("Z", "+00:00"),
+                                ) if comment.get("updated_at") else None
+                                if trusted and edited == announced:
+                                    result.evidence.append(Evidence(
+                                        kind="trusted_reward_announcement",
+                                        source="github_comment",
+                                        url=comment.get("html_url") or candidate.url,
+                                        observed_at=announced, detail=body,
+                                    ))
                         except (KeyError, ValueError, TypeError, AttributeError):
                             pass
                     if TERMINAL.search(body):
@@ -190,16 +220,7 @@ class GitHubIssueInspector:
                             )
                         )
                     if CLAIM.search(body) and not ambiguous:
-                        result.competing_work_found = True
-                        result.evidence.append(
-                            Evidence(
-                                kind="contributor_claim",
-                                source="github_comment",
-                                url=comment.get("html_url") or candidate.url,
-                                observed_at=self._when(comment, now),
-                                detail=body[:300],
-                            )
-                        )
+                        result.missing_sources.append("unconfirmed contributor claim request")
                     result.restrictions.extend(RESTRICTION.findall(body))
             except ApiUnavailable as exc:
                 result.missing_sources.append(f"issue comments: {exc}")
@@ -228,6 +249,7 @@ class GitHubIssueInspector:
                     continue
                 pr_url = linked.get("html_url")
                 if not isinstance(pr_url, str):
+                    result.missing_sources.append("referenced PR lacks canonical identity")
                     continue
                 parsed = urlparse(pr_url)
                 segments = parsed.path.strip("/").split("/")
@@ -236,7 +258,11 @@ class GitHubIssueInspector:
                     or parsed.netloc != "github.com"
                     or len(segments) != 4
                     or segments[2] != "pull"
+                    or not segments[3].isdigit()
+                    or parsed.query
+                    or parsed.fragment
                 ):
+                    result.missing_sources.append("invalid referenced PR identity")
                     continue
                 result.referenced_prs.append(pr_url)
                 result.evidence.append(
@@ -252,6 +278,11 @@ class GitHubIssueInspector:
                     pr = await self._get(f"/repos/{segments[0]}/{segments[1]}/pulls/{segments[3]}")
                     if not isinstance(pr, dict):
                         raise ApiUnavailable("invalid pull request detail")
+                    if (pr.get("state") not in {"open", "closed"}
+                            or not isinstance(pr.get("title"), str)
+                            or "body" not in pr
+                            or (pr["body"] is not None and not isinstance(pr["body"], str))):
+                        raise ApiUnavailable("invalid pull request availability fields")
                     result.checked_sources.append(f"pull request {pr_url}")
                     text = (pr.get("title") or "") + " " + (pr.get("body") or "")
                     full_reference = re.search(
@@ -290,7 +321,8 @@ class GitHubIssueInspector:
                                 detail="PR explicitly linked to issue",
                             )
                         )
-                    if pr.get("state") == "open" and linked:
+                    if linked and (pr.get("state") == "open" or pr.get("merged_at")
+                                   or pr.get("merged") is True):
                         result.competing_work_found = True
                         result.evidence.append(
                             Evidence(
@@ -298,7 +330,9 @@ class GitHubIssueInspector:
                                 source="github_pull_request",
                                 url=pr_url,
                                 observed_at=now,
-                                detail="open PR explicitly linked to issue",
+                                detail=(
+                                    "open or merged implementation PR explicitly linked to issue"
+                                ),
                             )
                         )
                 except ApiUnavailable as exc:
@@ -308,6 +342,11 @@ class GitHubIssueInspector:
         result.linked_prs = list(dict.fromkeys(result.linked_prs))
         result.referenced_prs = list(dict.fromkeys(result.referenced_prs))
         result.restrictions = list(dict.fromkeys(result.restrictions))
+        if result.competing_work_found:
+            result.missing_sources = [
+                source for source in result.missing_sources
+                if source != "unconfirmed contributor claim request"
+            ]
         return result
 
     @staticmethod

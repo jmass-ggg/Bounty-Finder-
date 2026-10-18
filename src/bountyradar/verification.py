@@ -52,11 +52,13 @@ class Verifier:
         funding_provider: FundingProvider | None = None,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        record: Callable[[VerificationResult], None] | None = None,
     ) -> None:
         self.inspector = inspector
         self.settings = settings
         self.funding_provider = funding_provider
         self.clock = clock
+        self.record = record
 
     async def verify(self, candidate: BountyCandidate) -> VerificationResult:
         now = self.clock().astimezone(UTC)
@@ -149,6 +151,14 @@ class Verifier:
             if provisional_amount is None and parsed:
                 inspection.missing_sources.append(parsed)
         announcements = [e for e in evidence if e.kind == "reward_announcement"]
+        if provisional_amount is not None:
+            for announcement in announcements:
+                amount, currency, _ = reward_mention(announcement.detail)
+                if amount is not None and (amount, currency) != (
+                    provisional_amount, provisional_currency,
+                ):
+                    inspection.missing_sources.append("issue and comment rewards disagree")
+                    break
         if provisional_amount is None and announcements and not inspection.missing_sources:
             latest = max(announcements, key=lambda e: e.observed_at)
             provisional_amount, provisional_currency, _ = reward_mention(latest.detail)
@@ -260,7 +270,10 @@ class Verifier:
             checked_at=now,
             score=0,
         )
-        return rank(result, self.settings, now)
+        result = rank(result, self.settings, now)
+        if self.record:
+            self.record(result)
+        return result
 
     def _authoritative(self, record: FundingRecord, candidate: BountyCandidate) -> bool:
         host = urlparse(record.evidence_url).hostname

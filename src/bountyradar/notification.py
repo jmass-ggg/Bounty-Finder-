@@ -8,6 +8,7 @@ from email.message import EmailMessage
 from typing import Literal, Protocol
 
 from bountyradar.settings import Settings
+from bountyradar.sources import canonical_issue_url
 from bountyradar.verification_models import VerificationResult
 
 
@@ -87,18 +88,36 @@ def _safe_subject(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()[:150]
 
 
-def _message(subject: str, rows: list[tuple[str, str]], settings: Settings) -> EmailMessage:
+def _message(
+    subject: str, rows: list[tuple[str, str]], settings: Settings, *, issue_url: str | None = None,
+) -> EmailMessage:
     message = EmailMessage()
     message["Subject"] = _safe_subject(subject)
     message["From"] = settings.smtp_username
     message["To"] = settings.email_to
-    message.set_content("\n".join(f"{label}: {value}" for label, value in rows))
+    text = "\n".join(f"{label}: {value}" for label, value in rows)
+    if issue_url:
+        text += f"\n\nView Bounty on GitHub: {issue_url}"
+    message.set_content(text)
     rendered = "".join(
         f"<dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd>" for label, value in rows
     )
+    action = (
+        f'<p><a href="{html.escape(issue_url, quote=True)}" '
+        'style="display:inline-block;background:#176a3a;color:#ffffff;'
+        'padding:14px 22px;border-radius:6px;text-decoration:none;font-weight:bold">'
+        'View Bounty on GitHub</a></p>'
+        f'<p style="overflow-wrap:anywhere">Link: '
+        f'<a href="{html.escape(issue_url, quote=True)}">{html.escape(issue_url)}</a></p>'
+        if issue_url else ""
+    )
     message.add_alternative(
-        f"<!doctype html><html><body><h1>{html.escape(_safe_subject(subject))}</h1>"
-        f"<dl>{rendered}</dl></body></html>",
+        '<!doctype html><html><head><meta name="viewport" '
+        'content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;background:#f3f5f7;font-family:Arial,sans-serif;color:#18212b">'
+        '<main style="max-width:600px;margin:auto;padding:24px;background:white">'
+        f'<h1 style="font-size:22px">{html.escape(_safe_subject(subject))}</h1>'
+        f"<dl>{rendered}</dl>{action}</main></body></html>",
         subtype="html",
     )
     return message
@@ -112,8 +131,11 @@ def opportunity_message(
     evidence = [item for item in result.evidence if item.kind == "funding_funded"]
     funding = evidence[0] if evidence else None
     classification = result.notification_classification
-    subject = (f"BountyRadar [{classification}]: {result.currency} {result.amount}"
-               f" — {candidate.title}")
+    issue_url = canonical_issue_url(candidate)
+    reward = f"${result.amount} USD" if result.currency == "USD" else (
+        f"{result.amount} {result.currency}"
+    )
+    subject = f"[BountyRadar] {reward} — Apparently Unclaimed Bounty [{classification}]"
     rows = [
         ("Alert reason", reason),
         ("Notification classification", classification),
@@ -131,6 +153,8 @@ def opportunity_message(
         ("Verification category", result.category.value),
         ("Availability", result.availability.value),
         ("Claim status", result.claim_status.value),
+        ("Status", "Apparently unclaimed"),
+        ("Claim evidence", "No accepted claim or competing PR detected in checked sources."),
         ("Claim limitation",
          "No claim detected in inspected sources; not a guarantee of availability"),
         ("Assignees", ", ".join(result.assignees) or "None found in checked sources"),
@@ -141,11 +165,16 @@ def opportunity_message(
         ("Priority score", str(result.score)),
         ("Restrictions", "; ".join(result.restrictions) or "None found in checked sources"),
     ]
-    return _message(subject, rows, settings)
+    return _message(subject, rows, settings, issue_url=issue_url)
 
 
 def test_message(settings: Settings) -> EmailMessage:
-    return _message("BountyRadar test email", [("Status", "SMTP configuration test")], settings)
+    return _message(
+        "[BountyRadar PRODUCTION TEST] HTML Gmail Alert",
+        [("Status", "THIS IS A TEST — NOT A REAL BOUNTY"),
+         ("Purpose", "Multipart HTML/plain-text Gmail submission test")],
+        settings,
+    )
 
 
 def eligible_for_delivery(result: VerificationResult, settings: Settings, now) -> bool:
@@ -156,6 +185,10 @@ def eligible_for_delivery(result: VerificationResult, settings: Settings, now) -
     from bountyradar.verification_models import Availability, Category
 
     if not result.notification_eligible:
+        return False
+    try:
+        canonical_issue_url(result.candidate)
+    except ValueError:
         return False
     result = rank(result.model_copy(deep=True), settings, now)
 

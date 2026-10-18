@@ -86,7 +86,7 @@ def main():
 
         async def send(self, message):
             assert funded, "offline probe must never deliver email"
-            assert f"USD {amount}" in message["Subject"]
+            assert f"${amount} USD" in message["Subject"]
             print("MOCK_SMTP_ACCEPTED", flush=True)
 
     class TrustedFunding:

@@ -1,9 +1,11 @@
 """Outbox delivery orchestration with bounded, cancellable transport ownership."""
 
 import asyncio
+import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from email.utils import format_datetime
 
 from bountyradar.discovery import reward_mention
 from bountyradar.notification import (
@@ -28,6 +30,7 @@ class DeliverySummary:
     cancelled: int = 0
     daily_cap_reached: bool = False
     disabled: bool = False
+    scan_cap_reached: bool = False
 
 
 Revalidator = Callable[[VerificationResult], Awaitable[bool | None]]
@@ -50,7 +53,14 @@ async def send_pending(
         summary.disabled = True
         return summary
     outbox.recover_expired()
-    for entry in outbox.list_entries(due_only=True):
+    attempts = 0
+    for entry in outbox.list_entries(due_only=True, limit=settings.email_per_scan_cap * 4):
+        if attempts >= settings.email_per_scan_cap:
+            summary.scan_cap_reached = True
+            break
+        if outbox.daily_cap_reached():
+            summary.daily_cap_reached = True
+            break
         now = outbox.clock().astimezone(UTC)
         if not eligible_for_delivery(entry.result, settings, now):
             outbox.cancel(entry.event_key, "stored result no longer qualifies")
@@ -61,16 +71,21 @@ async def send_pending(
         except Exception:
             current = None
         if current is None:
+            outbox.defer(entry.event_key)
             summary.deferred += 1
             continue
         if current is False:
             outbox.cancel(entry.event_key, "GitHub availability no longer qualifies")
             summary.cancelled += 1
             continue
+        message = opportunity_message(entry.result, settings, entry.reason)
+        identity = hashlib.sha256(entry.event_key.encode()).hexdigest()
+        message["Message-ID"] = f"<{identity}@bountyradar.local>"
+        message["Date"] = format_datetime(now)
         if not outbox.claim(entry.event_key):
             summary.daily_cap_reached = True
             break
-        message = opportunity_message(entry.result, settings, entry.reason)
+        attempts += 1
         try:
             await transport.send(message)
         except asyncio.CancelledError:
@@ -117,6 +132,11 @@ async def github_revalidator(
             return False
         if current_amount != result.amount or currency != result.currency:
             return None  # Defer until the normal verifier updates the stored snapshot.
+        for evidence in inspection.evidence:
+            if evidence.kind == "reward_announcement":
+                amount, code, _ = reward_mention(evidence.detail)
+                if amount is not None and (amount, code) != (result.amount, result.currency):
+                    return None
     for match in EXPIRY_DATE.finditer(text):
         try:
             if date.fromisoformat(match.group(1)) < (now or datetime.now(UTC)).date():

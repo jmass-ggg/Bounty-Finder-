@@ -61,6 +61,29 @@ class RunState:
     def close(self) -> None:
         self.db.close()
 
+    def backlog_metrics(self) -> dict[str, int | float]:
+        """Bounded aggregate queries; no issue bodies or credentials enter logs."""
+        import time
+
+        started = time.monotonic()
+        total = self.db.execute("SELECT count(*) FROM discovered_issues").fetchone()[0]
+        checked = self.db.execute("SELECT count(*) FROM verification_results").fetchone()[0]
+        windows = self.db.execute(
+            "SELECT coalesce(sum(json_array_length(value,'$.windows')),0) "
+            "FROM scan_state WHERE key LIKE '%_search_progress'",
+        ).fetchone()[0]
+        return {
+            "stored_candidates": total,
+            "stored_verifications": checked,
+            "never_verified_backlog": max(0, total - checked),
+            "incomplete_search_windows": windows,
+            "database_bytes": (
+                self.db.execute("PRAGMA page_size").fetchone()[0]
+                * self.db.execute("PRAGMA page_count").fetchone()[0]
+            ),
+            "metrics_query_ms": round((time.monotonic() - started) * 1000, 3),
+        }
+
     def last_complete_at(self, source: str = "github") -> datetime | None:
         key = f"last_complete_at:{source}"
         row = self.db.execute(

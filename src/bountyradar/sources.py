@@ -4,6 +4,7 @@ External adapters must use a documented, permitted interface. A platform's
 reward assertion is only a candidate signal; funding still needs verification.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -46,7 +47,12 @@ def canonical_issue_key(candidate: BountyCandidate) -> tuple[str, int]:
     parts = parsed.path.strip("/").split("/")
     if (
         parsed.scheme != "https"
-        or parsed.hostname != "github.com"
+        or parsed.netloc != "github.com"
+        or parsed.query
+        or parsed.fragment
+        or any(char.isspace() or ord(char) < 32 for char in candidate.url)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", candidate.repository)
+        or candidate.repository.split("/")[-1] in {".", ".."}
         or len(parts) != 4
         or parts[2] != "issues"
         or not parts[3].isdigit()
@@ -55,6 +61,12 @@ def canonical_issue_key(candidate: BountyCandidate) -> tuple[str, int]:
     ):
         raise ValueError("candidate lacks a canonical GitHub issue link")
     return candidate.repository.casefold(), candidate.issue_number
+
+
+def canonical_issue_url(candidate: BountyCandidate) -> str:
+    """Validate the external link independently of stored eligibility flags."""
+    canonical_issue_key(candidate)
+    return f"https://github.com/{candidate.repository}/issues/{candidate.issue_number}"
 
 
 async def scan_sources(

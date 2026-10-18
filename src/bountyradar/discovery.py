@@ -128,11 +128,7 @@ class GitHubDiscovery:
         start = self.monotonic()
         cap = min(original.github_fresh_search_requests,
                   max(1, original.github_max_search_requests_per_scan // 4))
-        terms = (["bounty"] if "bounty" in original.search_terms else original.search_terms[:1])
-        labels = original.search_labels[:1]
         recent_settings = original.model_copy(update={
-            "search_terms": terms, "search_labels": labels,
-            "monetary_terms": [] if terms or labels else original.monetary_terms[:1],
             "github_max_search_requests_per_scan": cap,
             "github_search_timeout_seconds": min(original.github_fresh_search_timeout_seconds,
                                                   original.github_search_timeout_seconds / 4),

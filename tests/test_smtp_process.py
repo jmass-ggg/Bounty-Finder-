@@ -42,8 +42,8 @@ async def test_worker_preserves_message_and_returns_success(tmp_path):
     marker = tmp_path / "success"
     await process_transport(settings, marker, "success").send(mail(settings))
     accepted = json.loads(marker.with_suffix(".accepted").read_text())
-    assert accepted["subject"] == "BountyRadar test email"
-    assert "SMTP configuration test" in accepted["body"]
+    assert accepted["subject"] == "[BountyRadar PRODUCTION TEST] HTML Gmail Alert"
+    assert "THIS IS A TEST — NOT A REAL BOUNTY" in accepted["body"]
     with pytest.raises(ProcessLookupError):
         os.kill(accepted["pid"], 0)
 
@@ -233,11 +233,12 @@ def test_full_cli_process_delivery_increase_interruption_and_duplicate_preventio
         )
         assert completed.returncode == 0, (completed.stdout, completed.stderr)
         assert completed.stderr == ""
-        return json.loads(completed.stdout)["sent"]
+        events = [json.loads(line) for line in completed.stdout.splitlines()]
+        return next(event["sent"] for event in events if event["event"] == "run_complete")
 
     assert invoke("funded-process") == 1
     accepted_path = database.with_suffix(".accepted")
-    assert "USD 100" in json.loads(accepted_path.read_text())["subject"]
+    assert "$100 USD" in json.loads(accepted_path.read_text())["subject"]
     first_acceptance = accepted_path.read_bytes()
     assert invoke("funded-process") == 0
     assert accepted_path.read_bytes() == first_acceptance
@@ -245,7 +246,7 @@ def test_full_cli_process_delivery_increase_interruption_and_duplicate_preventio
     try:
         pid = ready_pid(process, database)
         increase_acceptance = accepted_path.read_bytes()
-        assert "USD 150" in json.loads(increase_acceptance)["subject"]
+        assert "$150 USD" in json.loads(increase_acceptance)["subject"]
         process.terminate()
         stdout, stderr = process.communicate(timeout=5)
         assert process.returncode == 143, (stdout, stderr)

@@ -130,7 +130,10 @@ def test_successful_test_email_with_mocked_smtp():
     settings = options()
     GmailSMTPTransport(settings, smtp_factory(fake)).send(make_test_message(settings))
     assert len(fake.messages) == 1
-    assert fake.messages[0]["Subject"] == "BountyRadar test email"
+    assert fake.messages[0]["Subject"] == "[BountyRadar PRODUCTION TEST] HTML Gmail Alert"
+    assert "THIS IS A TEST — NOT A REAL BOUNTY" in fake.messages[0].get_body(
+        preferencelist=("plain",),
+    ).get_content()
     assert fake.messages[0].get_body(preferencelist=("plain",))
     assert fake.messages[0].get_body(preferencelist=("html",))
 
